@@ -341,13 +341,9 @@ def build_portfolio_references(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def portfolio_segment(campaign_name: str) -> str:
     name = (campaign_name or "").lower()
-    if "institucional" in name or "institutional" in name:
-        return "institutional"
     if any(token in name for token in ["-nb", "_nb", " nb", "nbd", "nonbrand", "generica", "genérica"]):
-        return "non_brand"
-    if any(token in name for token in [" bd", "| bd", "_bd", "-bd", "brand", "branded"]):
-        return "brand"
-    return "other"
+        return "non_branded"
+    return "branded"
 
 
 def classify_efficiency(
@@ -386,8 +382,14 @@ def classify_cpa_efficiency(row: dict[str, Any]) -> str:
 def classify_saturation(row: dict[str, Any], forecast: dict[str, Any]) -> str:
     budget_consumption = number(forecast.get("forecast_budget_consumption")) or row["budget_consumption"]
     impression_share = row["impression_share"]
+    lost_is_budget = row["lost_is_budget"]
+    lost_is_rank = row["lost_is_rank"]
     if impression_share and impression_share >= 0.90:
-        return "high"
+        return "high_coverage"
+    if lost_is_budget and lost_is_budget >= 0.20:
+        return "lost_by_budget"
+    if lost_is_rank and lost_is_rank >= 0.20:
+        return "lost_by_rank"
     if budget_consumption >= 0.95:
         return "budget_capped"
     if budget_consumption >= 0.75:
@@ -412,7 +414,12 @@ def recommend_action(row: dict[str, Any], efficiency_status: str, saturation_lev
     if efficiency_status == "near_profitability":
         return "monitor", "ROAS real perto da linha minima de rentabilidade"
     if efficiency_status in {"profitable", "above_profitability", "above_portfolio"}:
-        if efficiency_status == "above_portfolio" or saturation_level in {"budget_capped", "moderate"}:
+        if efficiency_status == "above_portfolio" or saturation_level in {
+            "budget_capped",
+            "moderate",
+            "lost_by_budget",
+            "lost_by_rank",
+        }:
             return "reduce_troas_or_increase_budget", "ROAS real acima do portfolio comparavel; ha espaco para buscar volume"
         return "monitor", "ROAS real acima da linha minima sem sinal forte de restricao"
     return "monitor", "sem sinal forte suficiente"
@@ -423,7 +430,7 @@ def risk_level(row: dict[str, Any], action: str, saturation_level: str) -> str:
         return "high"
     if action == "reduce_troas_or_increase_budget":
         return "medium"
-    if saturation_level in {"budget_capped", "high"}:
+    if saturation_level in {"budget_capped", "high_coverage", "lost_by_budget", "lost_by_rank"}:
         return "medium"
     if row["data_sufficiency"] in {"insufficient", "low"}:
         return "medium"

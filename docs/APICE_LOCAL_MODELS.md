@@ -80,13 +80,13 @@ medium = cpc
 As metas `target_roas` sao tratadas como alavanca de otimizacao, nao como corte principal de sucesso. A decisao usa `ga4_roas` contra:
 
 ```text
-portfolio_segment: institutional, non_brand, brand ou other
+portfolio_segment: branded ou non_branded
 segment_roas_reference: mediana de ROAS GA4 do segmento no ultimo dia
 min_profitability_roas: piso minimo de rentabilidade
 effective_roas_reference: maior valor entre piso minimo e benchmark do segmento
 ```
 
-Assim campanhas institucionais sao comparadas com institucionais, campanhas NB com NB, e assim por diante. O `ads_roas` permanece no output para leitura tecnica do Google Ads.
+Assim campanhas com nome da marca ou institucionais sao comparadas no grupo branded, e campanhas NB/genericas sao comparadas no grupo non_branded. O `ads_roas` permanece no output para leitura tecnica do Google Ads.
 
 ## Resultado da execucao
 
