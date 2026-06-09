@@ -1,0 +1,33 @@
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+.mcp.json
+client_secret*.json
+google-ads.yaml
+*.yaml
+!*.example.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+Lib/
+Scripts/
+pyvenv.cfg
+
+# Local outputs and large artifacts
+outputs/
+downloads/
+traces/
+*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
