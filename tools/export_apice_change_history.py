@@ -1,4 +1,4 @@
-"""Export recent Google Ads change history for Apice."""
+"""Export recent Google Ads change history."""
 
 from __future__ import annotations
 
@@ -31,7 +31,8 @@ CHANGE_FIELDS = [
 
 def main() -> None:
     args = parse_args()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     with GoogleAdsMcpClient(
         login_customer_id=args.login_customer_id,
         config_path=Path(args.config_path),
@@ -47,17 +48,20 @@ def main() -> None:
             ],
             orderings=["change_event.change_date_time DESC"],
             limit=args.limit,
-        )
+    )
     normalized = [normalize_change(row) for row in rows]
-    output = OUTPUT_DIR / "apice_change_history.csv"
+    output = output_dir / f"{args.file_prefix}_change_history.csv"
     write_csv(output, normalized)
     summary = {
+        "customer_id": args.customer_id,
+        "company": args.company_name,
+        "file_prefix": args.file_prefix,
         "rows": len(normalized),
         "output": str(output),
         "start_datetime": args.start_datetime,
         "end_datetime": args.end_datetime,
     }
-    (OUTPUT_DIR / "apice_change_history_summary.json").write_text(
+    (output_dir / f"{args.file_prefix}_change_history_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
     print(json.dumps(summary, indent=2))
@@ -68,6 +72,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--customer-id", default=APICE_CUSTOMER_ID)
     parser.add_argument("--login-customer-id", default=DEFAULT_LOGIN_CUSTOMER_ID)
     parser.add_argument("--config-path", default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--company-name", default="Apice")
+    parser.add_argument("--file-prefix", default="apice")
     parser.add_argument("--start-datetime", default="2026-01-01 00:00:00")
     parser.add_argument(
         "--end-datetime",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import argparse
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
@@ -15,35 +16,50 @@ ROOT = Path(__file__).resolve().parents[1]
 STAGING_DIR = ROOT / "outputs" / "local_staging"
 OUTPUT_DIR = ROOT / "outputs" / "analysis"
 START_DATE = date(2026, 1, 1)
+DEFAULT_MIN_PROFITABILITY_ROAS = 3.0
 
 
 def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    args = parse_args()
+    staging_dir = Path(args.staging_dir)
+    output_dir = Path(args.output_dir)
+    file_prefix = args.file_prefix
+    output_dir.mkdir(parents=True, exist_ok=True)
     daily = [
         row
-        for row in read_csv(STAGING_DIR / "apice_campaign_daily_enriched.csv")
+        for row in read_csv(staging_dir / f"{file_prefix}_campaign_daily_enriched.csv")
         if parse_date(row["date"]) >= START_DATE
     ]
     hourly = [
         row
-        for row in read_csv(STAGING_DIR / "apice_campaign_hourly_metrics.csv")
+        for row in read_csv(staging_dir / f"{file_prefix}_campaign_hourly_metrics.csv")
         if parse_date(row["date"]) >= START_DATE
     ]
     if not daily:
-        raise RuntimeError("No daily Apice rows for 2026+")
+        raise RuntimeError(f"No daily {args.company_name} rows for 2026+")
 
     account = summarize_account(daily, hourly)
     campaigns = summarize_campaigns(daily)
-    verdicts = [campaign_verdict(row) for row in campaigns]
+    verdicts = [campaign_verdict(row, args.min_profitability_roas) for row in campaigns]
 
-    write_csv(OUTPUT_DIR / "apice_campaign_verdicts_2026.csv", verdicts)
-    report = render_report(account, verdicts)
-    (OUTPUT_DIR / "apice_account_analysis_2026.md").write_text(report, encoding="utf-8")
-    (OUTPUT_DIR / "apice_account_analysis_2026.json").write_text(
+    write_csv(output_dir / f"{file_prefix}_campaign_verdicts_2026.csv", verdicts)
+    report = render_report(account, verdicts, args.company_name)
+    (output_dir / f"{file_prefix}_account_analysis_2026.md").write_text(report, encoding="utf-8")
+    (output_dir / f"{file_prefix}_account_analysis_2026.json").write_text(
         json.dumps({"account": account, "campaigns": verdicts}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     print(report)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--company-name", default="Apice")
+    parser.add_argument("--file-prefix", default="apice")
+    parser.add_argument("--staging-dir", default=str(STAGING_DIR))
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--min-profitability-roas", type=float, default=DEFAULT_MIN_PROFITABILITY_ROAS)
+    return parser.parse_args()
 
 
 def summarize_account(daily: list[dict[str, str]], hourly: list[dict[str, str]]) -> dict[str, Any]:
@@ -170,10 +186,9 @@ def summarize_campaigns(daily: list[dict[str, str]]) -> list[dict[str, Any]]:
     return sorted(summaries, key=lambda row: row["cost"], reverse=True)
 
 
-def campaign_verdict(row: dict[str, Any]) -> dict[str, Any]:
+def campaign_verdict(row: dict[str, Any], min_profitability_roas: float) -> dict[str, Any]:
     roas = row["roas"]
     ads_roas = row["ads_roas"]
-    target_roas = row["target_roas"]
     latest_budget_consumption = row["latest_budget_consumption"]
     status = row["status"]
     action = "monitor"
@@ -186,20 +201,20 @@ def campaign_verdict(row: dict[str, Any]) -> dict[str, Any]:
         verdict = "pausada"
         reason = "campanha nao esta enabled"
         risk = "low"
-    elif target_roas and ads_roas >= target_roas * 1.15 and latest_budget_consumption >= 0.75:
-        action = "scale_or_lower_troas"
-        verdict = "boa candidata a escala"
-        reason = "ROAS Ads acima da meta e consumo alto de budget"
+    elif roas >= min_profitability_roas and latest_budget_consumption >= 0.75:
+        action = "reduce_troas_or_increase_budget"
+        verdict = "boa candidata a volume"
+        reason = "ROAS GA4 acima da linha minima e consumo relevante de budget"
         risk = "low"
-    elif target_roas and ads_roas < target_roas * 0.80:
+    elif roas < min_profitability_roas * 0.80:
         action = "increase_troas_or_reduce_budget"
         verdict = "corrigir eficiencia"
-        reason = "ROAS Ads abaixo da meta real"
+        reason = "ROAS GA4 abaixo da linha minima de rentabilidade"
         risk = "high"
-    elif target_roas and ads_roas >= target_roas:
+    elif roas >= min_profitability_roas:
         action = "monitor_or_increment"
         verdict = "saudavel"
-        reason = "ROAS Ads acima da meta real"
+        reason = "ROAS GA4 acima da linha minima de rentabilidade"
         risk = "low"
     elif row["target_cpa"] and row["conversions"] > 0:
         action = "monitor_tcpa"
@@ -214,6 +229,7 @@ def campaign_verdict(row: dict[str, Any]) -> dict[str, Any]:
 
     return {
         **row,
+        "min_profitability_roas": min_profitability_roas,
         "recommended_action": action,
         "verdict": verdict,
         "reason": reason,
@@ -221,12 +237,12 @@ def campaign_verdict(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def render_report(account: dict[str, Any], campaigns: list[dict[str, Any]]) -> str:
+def render_report(account: dict[str, Any], campaigns: list[dict[str, Any]], company_name: str) -> str:
     enabled = [row for row in campaigns if row["status"] == "ENABLED"]
     top_cost = enabled[:10]
     action_counts = Counter(row["recommended_action"] for row in enabled)
     lines = [
-        "# Analise Apice 2026",
+        f"# Analise {company_name} 2026",
         "",
         "## Conta",
         "",

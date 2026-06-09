@@ -1,4 +1,4 @@
-"""Export Apice Google Ads settings and hourly metrics for GoTrends staging."""
+"""Export Google Ads settings and hourly metrics for GoTrends staging."""
 
 from __future__ import annotations
 
@@ -59,21 +59,32 @@ def main() -> None:
         login_customer_id=args.login_customer_id,
         config_path=Path(args.config_path),
     ) as client:
-        settings_rows = export_settings(client, args.customer_id, out_dir, args.settings_limit)
+        settings_rows = export_settings(
+            client,
+            args.customer_id,
+            out_dir,
+            args.company_name,
+            args.file_prefix,
+            args.settings_limit,
+        )
         hourly_rows = export_hourly(
             client,
             args.customer_id,
             out_dir,
+            args.company_name,
+            args.file_prefix,
             args.date_condition,
             args.hourly_limit,
         )
 
     summary = {
         "customer_id": args.customer_id,
+        "company": args.company_name,
+        "file_prefix": args.file_prefix,
         "settings_rows": len(settings_rows),
         "hourly_rows": len(hourly_rows),
-        "settings_output": str(out_dir / "apice_campaign_settings.csv"),
-        "hourly_output": str(out_dir / "apice_hourly_metrics.csv"),
+        "settings_output": str(out_dir / f"{args.file_prefix}_campaign_settings.csv"),
+        "hourly_output": str(out_dir / f"{args.file_prefix}_hourly_metrics.csv"),
         "run_date": date.today().isoformat(),
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -86,6 +97,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--login-customer-id", default=DEFAULT_LOGIN_CUSTOMER_ID)
     parser.add_argument("--config-path", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--company-name", default="Apice")
+    parser.add_argument("--file-prefix", default="apice")
     parser.add_argument("--date-condition", default="segments.date DURING LAST_7_DAYS")
     parser.add_argument("--settings-limit", type=int, default=1000)
     parser.add_argument("--hourly-limit", type=int, default=5000)
@@ -96,6 +109,8 @@ def export_settings(
     client: GoogleAdsMcpClient,
     customer_id: str,
     out_dir: Path,
+    company_name: str,
+    file_prefix: str,
     limit: int,
 ) -> list[dict[str, Any]]:
     rows = client.search(
@@ -106,8 +121,8 @@ def export_settings(
         orderings=["campaign.status", "campaign.name"],
         limit=limit,
     )
-    normalized = [normalize_settings_row(row) for row in rows]
-    write_csv(out_dir / "apice_campaign_settings.csv", normalized)
+    normalized = [normalize_settings_row(row, company_name) for row in rows]
+    write_csv(out_dir / f"{file_prefix}_campaign_settings.csv", normalized)
     return normalized
 
 
@@ -115,6 +130,8 @@ def export_hourly(
     client: GoogleAdsMcpClient,
     customer_id: str,
     out_dir: Path,
+    company_name: str,
+    file_prefix: str,
     date_condition: str,
     limit: int,
 ) -> list[dict[str, Any]]:
@@ -126,12 +143,12 @@ def export_hourly(
         orderings=["segments.date DESC", "segments.hour DESC", "campaign.name"],
         limit=limit,
     )
-    normalized = [normalize_hourly_row(row) for row in rows]
-    write_csv(out_dir / "apice_hourly_metrics.csv", normalized)
+    normalized = [normalize_hourly_row(row, company_name) for row in rows]
+    write_csv(out_dir / f"{file_prefix}_hourly_metrics.csv", normalized)
     return normalized
 
 
-def normalize_settings_row(row: dict[str, Any]) -> dict[str, Any]:
+def normalize_settings_row(row: dict[str, Any], company_name: str) -> dict[str, Any]:
     target_roas = first_number(
         row,
         "campaign.target_roas.target_roas",
@@ -149,7 +166,7 @@ def normalize_settings_row(row: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "customer_id": row.get("customer.id"),
-        "company": "Apice",
+        "company": company_name,
         "campaign_id": row.get("campaign.id"),
         "campaign_name": row.get("campaign.name"),
         "campaign_status": row.get("campaign.status"),
@@ -165,11 +182,11 @@ def normalize_settings_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_hourly_row(row: dict[str, Any]) -> dict[str, Any]:
+def normalize_hourly_row(row: dict[str, Any], company_name: str) -> dict[str, Any]:
     cost_micros = first_number(row, "metrics.cost_micros")
     return {
         "customer_id": row.get("customer.id"),
-        "company": "Apice",
+        "company": company_name,
         "campaign_id": row.get("campaign.id"),
         "campaign_name": row.get("campaign.name"),
         "campaign_status": row.get("campaign.status"),

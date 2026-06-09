@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import argparse
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -17,12 +18,18 @@ API_DIR = ROOT / "outputs" / "apice_google_ads"
 
 
 def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    recommendations = read_csv(LOCAL_MODELS_DIR / "apice_final_recommendations.csv")
-    campaign_features = read_csv(LOCAL_MODELS_DIR / "apice_campaign_features.csv")
-    daily_metrics = read_csv(LOCAL_MODELS_DIR / "apice_daily_metrics_2026.csv")
-    account_analysis = json.loads((ANALYSIS_DIR / "apice_account_analysis_2026.json").read_text())
-    changes = read_csv(API_DIR / "apice_change_history.csv")
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+    local_models_dir = Path(args.local_models_dir)
+    analysis_dir = Path(args.analysis_dir)
+    api_dir = Path(args.api_dir)
+    file_prefix = args.file_prefix
+    output_dir.mkdir(parents=True, exist_ok=True)
+    recommendations = read_csv(local_models_dir / f"{file_prefix}_final_recommendations.csv")
+    campaign_features = read_csv(local_models_dir / f"{file_prefix}_campaign_features.csv")
+    daily_metrics = read_csv(local_models_dir / f"{file_prefix}_daily_metrics_2026.csv")
+    account_analysis = json.loads((analysis_dir / f"{file_prefix}_account_analysis_2026.json").read_text())
+    changes = read_csv(api_dir / f"{file_prefix}_change_history.csv")
 
     feature_by_campaign = {row["campaign_id"]: row for row in campaign_features}
     changes_by_campaign = map_changes_by_campaign(changes)
@@ -32,14 +39,25 @@ def main() -> None:
         recent_changes = changes_by_campaign.get(rec["campaign_id"], [])
         final_rows.append(final_output_row(rec, feature, recent_changes))
 
-    write_csv(OUTPUT_DIR / "apice_final_recommendations_project_output.csv", final_rows)
-    report = render_report(account_analysis["account"], final_rows, changes)
-    (OUTPUT_DIR / "apice_final_report.md").write_text(report, encoding="utf-8")
-    (OUTPUT_DIR / "apice_final_report.json").write_text(
+    write_csv(output_dir / f"{file_prefix}_final_recommendations_project_output.csv", final_rows)
+    report = render_report(account_analysis["account"], final_rows, changes, args.company_name)
+    (output_dir / f"{file_prefix}_final_report.md").write_text(report, encoding="utf-8")
+    (output_dir / f"{file_prefix}_final_report.json").write_text(
         json.dumps({"account": account_analysis["account"], "recommendations": final_rows}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     print(report)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--company-name", default="Apice")
+    parser.add_argument("--file-prefix", default="apice")
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--local-models-dir", default=str(LOCAL_MODELS_DIR))
+    parser.add_argument("--analysis-dir", default=str(ANALYSIS_DIR))
+    parser.add_argument("--api-dir", default=str(API_DIR))
+    return parser.parse_args()
 
 
 def final_output_row(rec: dict[str, str], feature: dict[str, str], changes: list[dict[str, str]]) -> dict[str, Any]:
@@ -62,6 +80,15 @@ def final_output_row(rec: dict[str, str], feature: dict[str, str], changes: list
         "ads_conversion_value_day": money(rec["ads_conversion_value"] or rec["conversion_value"]),
         "ga4_purchase_revenue_day": money(rec["ga4_purchase_revenue"]),
         "business_revenue_day": money(rec["business_revenue"]),
+        "portfolio_segment": rec.get("portfolio_segment", ""),
+        "segment_roas_reference": rounded(rec.get("segment_roas_reference")),
+        "account_roas_reference": rounded(rec.get("account_roas_reference")),
+        "effective_roas_reference": rounded(rec.get("effective_roas_reference")),
+        "min_profitability_roas": rounded(rec.get("min_profitability_roas")),
+        "profitability_roas_gap": rounded(rec.get("profitability_roas_gap")),
+        "segment_roas_gap": rounded(rec.get("segment_roas_gap")),
+        "effective_roas_gap": rounded(rec.get("effective_roas_gap")),
+        "profitability_status": rec.get("profitability_status", ""),
         "ads_roas_day": rounded(rec["ads_roas"]),
         "ga4_roas_day": rounded(rec["ga4_roas"]),
         "business_roas_day": rounded(rec["roas"]),
@@ -98,10 +125,17 @@ def approval_note(action: str, status: str, changes: list[dict[str, str]]) -> st
         return "Candidata prioritaria: revisar meta, budget e mix de produtos/termos."
     if action == "reduce_budget_or_fix_cpa":
         return "Candidata CPA: revisar meta de CPA e qualidade do trafego."
+    if action == "reduce_troas_or_increase_budget":
+        return "Candidata a volume: validar margem, estoque e limite operacional antes de abrir entrega."
     return "Monitorar sem alteracao."
 
 
-def render_report(account: dict[str, Any], rows: list[dict[str, Any]], changes: list[dict[str, str]]) -> str:
+def render_report(
+    account: dict[str, Any],
+    rows: list[dict[str, Any]],
+    changes: list[dict[str, str]],
+    company_name: str,
+) -> str:
     action_counts = Counter(row["recommended_action"] for row in rows)
     guardrail_counts = Counter(row["business_constraints_status"] for row in rows)
     change_counts = Counter(row["change_resource_type"] for row in changes)
@@ -109,7 +143,7 @@ def render_report(account: dict[str, Any], rows: list[dict[str, Any]], changes: 
     blocked = [row for row in rows if row["business_constraints_status"] == "blocked"]
 
     lines = [
-        "# GoTrends - Relatorio Final Apice",
+        f"# GoTrends - Relatorio Final {company_name}",
         "",
         "## Resumo Executivo",
         "",
@@ -121,7 +155,7 @@ def render_report(account: dict[str, Any], rows: list[dict[str, Any]], changes: 
         f"Valor de conversao Ads 2026: R$ {account['ads_conversion_value']:,.2f}",
         f"Ultimo dia ({account['latest_date']}): ROAS GA4 {account['latest_ga4_roas']:.2f}, ROAS Ads {account['latest_ads_roas']:.2f}, custo R$ {account['latest_cost']:,.2f}",
         "",
-        "Veredito: o relatorio agora separa ROAS de negocio (GA4 purchase_revenue / custo) e ROAS tecnico do Google Ads. As metas tROAS continuam sendo avaliadas contra o valor de conversao Ads, enquanto o ROAS GA4 orienta a leitura executiva de receita.",
+        "Veredito: o relatorio separa ROAS de negocio (GA4 purchase_revenue / custo) e ROAS tecnico do Google Ads. A decisao agora usa ROAS real/GA4 contra o portfolio comparavel da conta, preservando a linha minima de rentabilidade como piso de seguranca. O tROAS entra como alavanca de otimizacao, nao como corte principal de sucesso.",
         "",
         "## Distribuicao de Acoes",
         "",
@@ -146,7 +180,8 @@ def render_report(account: dict[str, Any], rows: list[dict[str, Any]], changes: 
     for row in blocked:
         lines.append(
             f"- {row['campaign_name']}: {row['recommended_action']} | {row['constraints_reason']} | "
-            f"ROAS GA4 {row['ga4_roas_day']} | ROAS Ads {row['ads_roas_day']} vs meta {row['target_roas']} | prioridade {row['priority_score']}"
+            f"ROAS GA4 {row['ga4_roas_day']} vs segmento {row['segment_roas_reference']} ({row['portfolio_segment']}) | "
+            f"ROAS Ads {row['ads_roas_day']} | tROAS {row['target_roas']} | prioridade {row['priority_score']}"
         )
     return "\n".join(lines) + "\n"
 
@@ -165,6 +200,13 @@ def recommendation_block(row: dict[str, Any]) -> list[str]:
         f"ROAS Ads dia: {row['ads_roas_day']}",
         f"ROAS Ads 7d: {row['ads_roas_7d']}",
         f"ROAS Ads 28d: {row['ads_roas_28d']}",
+        f"Segmento portfolio: {row['portfolio_segment']}",
+        f"Referencia ROAS segmento: {row['segment_roas_reference']}",
+        f"Referencia ROAS conta: {row['account_roas_reference']}",
+        f"Gap vs segmento: {row['segment_roas_gap']}",
+        f"Linha minima ROAS: {row['min_profitability_roas']}",
+        f"Gap rentabilidade: {row['profitability_roas_gap']}",
+        f"Status rentabilidade: {row['profitability_status']}",
         f"Meta tROAS: {row['target_roas']}",
         f"Budget: R$ {row['budget']}",
         f"Consumo de budget no dia: {row['budget_consumption']}",

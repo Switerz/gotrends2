@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import argparse
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
@@ -15,39 +16,65 @@ ROOT = Path(__file__).resolve().parents[1]
 STAGING_DIR = ROOT / "outputs" / "local_staging"
 OUTPUT_DIR = ROOT / "outputs" / "local_models"
 START_DATE = date(2026, 1, 1)
+DEFAULT_MIN_PROFITABILITY_ROAS = 3.0
 
 
 def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    args = parse_args()
+    staging_dir = Path(args.staging_dir)
+    output_dir = Path(args.output_dir)
+    file_prefix = args.file_prefix
+    output_dir.mkdir(parents=True, exist_ok=True)
     daily = [
         normalize_daily(row)
-        for row in read_csv(STAGING_DIR / "apice_campaign_daily_enriched.csv")
+        for row in read_csv(staging_dir / f"{file_prefix}_campaign_daily_enriched.csv")
         if parse_date(row["date"]) >= START_DATE
     ]
     hourly = [
         normalize_hourly(row)
-        for row in read_csv(STAGING_DIR / "apice_campaign_hourly_metrics.csv")
+        for row in read_csv(staging_dir / f"{file_prefix}_campaign_hourly_metrics.csv")
         if parse_date(row["date"]) >= START_DATE
     ]
     if not daily:
-        raise RuntimeError("No Apice daily rows from 2026 onward. Build local staging first.")
+        raise RuntimeError(f"No {args.company_name} daily rows from 2026 onward. Build local staging first.")
 
-    daily_metrics = build_daily_metrics(daily)
+    daily_metrics = build_daily_metrics(daily, args.min_profitability_roas)
     intraday_forecast = build_intraday_forecast(hourly)
-    campaign_features = build_campaign_features(daily_metrics, intraday_forecast)
+    campaign_features = build_campaign_features(
+        daily_metrics,
+        intraday_forecast,
+        args.min_profitability_roas,
+    )
     recommendations = apply_local_guardrails(campaign_features)
 
-    write_csv(OUTPUT_DIR / "apice_daily_metrics_2026.csv", daily_metrics)
-    write_csv(OUTPUT_DIR / "apice_intraday_forecast.csv", intraday_forecast)
-    write_csv(OUTPUT_DIR / "apice_campaign_features.csv", campaign_features)
-    write_csv(OUTPUT_DIR / "apice_final_recommendations.csv", recommendations)
+    write_csv(output_dir / f"{file_prefix}_daily_metrics_2026.csv", daily_metrics)
+    write_csv(output_dir / f"{file_prefix}_intraday_forecast.csv", intraday_forecast)
+    write_csv(output_dir / f"{file_prefix}_campaign_features.csv", campaign_features)
+    write_csv(output_dir / f"{file_prefix}_final_recommendations.csv", recommendations)
 
-    summary = build_summary(daily_metrics, intraday_forecast, recommendations)
-    (OUTPUT_DIR / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary = build_summary(
+        daily_metrics,
+        intraday_forecast,
+        recommendations,
+        output_dir,
+        file_prefix,
+        args.company_name,
+    )
+    (output_dir / f"{file_prefix}_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
 
-def build_daily_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--company-name", default="Apice")
+    parser.add_argument("--file-prefix", default="apice")
+    parser.add_argument("--staging-dir", default=str(STAGING_DIR))
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--min-profitability-roas", type=float, default=DEFAULT_MIN_PROFITABILITY_ROAS)
+    return parser.parse_args()
+
+
+def build_daily_metrics(rows: list[dict[str, Any]], min_profitability_roas: float) -> list[dict[str, Any]]:
     by_campaign: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_campaign[str(row["campaign_id"])].append(row)
@@ -81,12 +108,20 @@ def build_daily_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "business_target_roas_gap": safe_div(row["ga4_roas"], target_roas) - 1
                     if target_roas
                     else "",
+                    "min_profitability_roas": min_profitability_roas,
+                    "profitability_roas_gap": safe_div(row["ga4_roas"], min_profitability_roas) - 1
+                    if min_profitability_roas
+                    else "",
                     "target_cpa_gap": safe_div(safe_div(row["cost"], row["conversions"]), target_cpa)
                     - 1
                     if target_cpa and row["conversions"]
                     else "",
                     "trend_status": trend_status(row, ads_roas_28d, cpa_28d),
-                    "business_trend_status": business_trend_status(row, roas_28d),
+                    "business_trend_status": business_trend_status(
+                        row,
+                        roas_28d,
+                        min_profitability_roas,
+                    ),
                     "data_sufficiency": data_sufficiency(prior_28),
                 }
             )
@@ -148,19 +183,40 @@ def build_intraday_forecast(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_campaign_features(
     daily_metrics: list[dict[str, Any]],
     intraday: list[dict[str, Any]],
+    min_profitability_roas: float,
 ) -> list[dict[str, Any]]:
     latest_date = max(row["date"] for row in daily_metrics)
     latest_rows = [row for row in daily_metrics if row["date"] == latest_date]
     intraday_by_campaign = {str(row["campaign_id"]): row for row in intraday}
+    portfolio_references = build_portfolio_references(latest_rows)
     out = []
     for row in latest_rows:
         forecast = intraday_by_campaign.get(str(row["campaign_id"]), {})
-        efficiency_status = classify_efficiency(row)
+        segment = portfolio_segment(row["campaign_name"])
+        segment_reference = portfolio_references["segment"].get(segment) or portfolio_references["account"]
+        effective_reference = max(min_profitability_roas, segment_reference)
+        efficiency_status = classify_efficiency(row, min_profitability_roas, segment_reference)
         saturation_level = classify_saturation(row, forecast)
         recommended_action, reason = recommend_action(row, efficiency_status, saturation_level)
         out.append(
             {
                 **row,
+                "portfolio_segment": segment,
+                "segment_roas_reference": segment_reference,
+                "account_roas_reference": portfolio_references["account"],
+                "effective_roas_reference": effective_reference,
+                "min_profitability_roas": min_profitability_roas,
+                "profitability_roas_gap": safe_div(row["ga4_roas"] or row["roas"], min_profitability_roas)
+                - 1
+                if min_profitability_roas
+                else "",
+                "segment_roas_gap": safe_div(row["ga4_roas"] or row["roas"], segment_reference) - 1
+                if segment_reference
+                else "",
+                "effective_roas_gap": safe_div(row["ga4_roas"] or row["roas"], effective_reference) - 1
+                if effective_reference
+                else "",
+                "profitability_status": efficiency_status,
                 "forecast_eod_cost": forecast.get("forecast_eod_cost", ""),
                 "forecast_eod_roas": forecast.get("forecast_eod_roas", ""),
                 "forecast_budget_consumption": forecast.get("forecast_budget_consumption", ""),
@@ -169,7 +225,7 @@ def build_campaign_features(
                 "recommended_action": recommended_action,
                 "reason": reason,
                 "risk_level": risk_level(row, recommended_action, saturation_level),
-                "priority_score": priority_score(row, recommended_action),
+                "priority_score": priority_score(row, recommended_action, effective_reference),
             }
         )
     return sorted(out, key=lambda row: row["priority_score"], reverse=True)
@@ -193,9 +249,13 @@ def apply_local_guardrails(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if budget_rank > 3:
                 status = "blocked"
                 reason = "blocked_by_daily_budget_change_limit"
-        elif action in {"increase_troas_or_reduce_budget", "reduce_budget_or_fix_cpa"}:
+        elif action in {
+            "increase_troas_or_reduce_budget",
+            "reduce_budget_or_fix_cpa",
+            "reduce_troas_or_increase_budget",
+        }:
             target_rank += 1
-            change_percent = -0.15
+            change_percent = 0.15 if action == "reduce_troas_or_increase_budget" else -0.15
             if target_rank > 1:
                 status = "blocked"
                 reason = "blocked_by_daily_target_change_limit"
@@ -259,21 +319,68 @@ def hourly_curves(rows: list[dict[str, Any]]) -> dict[str, dict[Any, float]]:
     }
 
 
-def classify_efficiency(row: dict[str, Any]) -> str:
-    if row["target_roas"]:
-        if row["ads_roas"] >= row["target_roas"] * 1.15:
-            return "above_target"
-        if row["ads_roas"] >= row["target_roas"] * 0.95:
-            return "near_target"
-        return "below_target"
+def build_portfolio_references(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_segment: dict[str, list[float]] = defaultdict(list)
+    account_values: list[float] = []
+    for row in rows:
+        value = row["ga4_roas"] or row["roas"]
+        if value <= 0 or row["cost"] <= 0:
+            continue
+        segment = portfolio_segment(row["campaign_name"])
+        by_segment[segment].append(value)
+        account_values.append(value)
+    account_reference = median(account_values) if account_values else DEFAULT_MIN_PROFITABILITY_ROAS
+    return {
+        "account": account_reference,
+        "segment": {
+            segment: median(values) if len(values) >= 2 else account_reference
+            for segment, values in by_segment.items()
+        },
+    }
+
+
+def portfolio_segment(campaign_name: str) -> str:
+    name = (campaign_name or "").lower()
+    if "institucional" in name or "institutional" in name:
+        return "institutional"
+    if any(token in name for token in ["-nb", "_nb", " nb", "nbd", "nonbrand", "generica", "genérica"]):
+        return "non_brand"
+    if any(token in name for token in [" bd", "| bd", "_bd", "-bd", "brand", "branded"]):
+        return "brand"
+    return "other"
+
+
+def classify_efficiency(
+    row: dict[str, Any],
+    min_profitability_roas: float,
+    segment_reference: float,
+) -> str:
+    business_roas = row["ga4_roas"] or row["roas"]
+    if business_roas >= min_profitability_roas * 1.25:
+        profitability_status = "above_profitability"
+    elif business_roas >= min_profitability_roas:
+        profitability_status = "profitable"
+    elif business_roas >= min_profitability_roas * 0.80:
+        profitability_status = "near_profitability"
+    else:
+        profitability_status = "below_profitability"
+    if segment_reference:
+        if business_roas < segment_reference * 0.80:
+            return "below_portfolio"
+        if business_roas >= segment_reference * 1.20 and business_roas >= min_profitability_roas:
+            return "above_portfolio"
+    return profitability_status
+
+
+def classify_cpa_efficiency(row: dict[str, Any]) -> str:
     if row["target_cpa"] and row["conversions"]:
         current_cpa = safe_div(row["cost"], row["conversions"])
         if current_cpa <= row["target_cpa"]:
-            return "above_target"
+            return "profitable"
         if current_cpa <= row["target_cpa"] * 1.15:
-            return "near_target"
-        return "below_target"
-    return "missing_target"
+            return "near_profitability"
+        return "below_profitability"
+    return "missing_profitability_reference"
 
 
 def classify_saturation(row: dict[str, Any], forecast: dict[str, Any]) -> str:
@@ -292,19 +399,30 @@ def recommend_action(row: dict[str, Any], efficiency_status: str, saturation_lev
     if row["status"] != "ENABLED":
         return "monitor", "campaign_not_enabled"
     if row["target_cpa"] and not row["target_roas"]:
-        if efficiency_status == "below_target":
+        cpa_status = classify_cpa_efficiency(row)
+        if cpa_status == "below_profitability":
             return "reduce_budget_or_fix_cpa", "CPA acima da meta real"
+        if efficiency_status == "below_profitability":
+            return "reduce_budget_or_fix_cpa", "ROAS real abaixo da linha minima de rentabilidade"
         return "monitor", "campanha tCPA dentro ou perto da meta"
-    if efficiency_status == "below_target":
-        return "increase_troas_or_reduce_budget", "ROAS abaixo da meta real"
-    if efficiency_status == "above_target" and saturation_level in {"budget_capped", "moderate"}:
-        return "increase_budget", "ROAS acima da meta real e budget consumido"
+    if efficiency_status == "below_profitability":
+        return "increase_troas_or_reduce_budget", "ROAS real abaixo da linha minima de rentabilidade"
+    if efficiency_status == "below_portfolio":
+        return "increase_troas_or_reduce_budget", "ROAS real abaixo do portfolio comparavel"
+    if efficiency_status == "near_profitability":
+        return "monitor", "ROAS real perto da linha minima de rentabilidade"
+    if efficiency_status in {"profitable", "above_profitability", "above_portfolio"}:
+        if efficiency_status == "above_portfolio" or saturation_level in {"budget_capped", "moderate"}:
+            return "reduce_troas_or_increase_budget", "ROAS real acima do portfolio comparavel; ha espaco para buscar volume"
+        return "monitor", "ROAS real acima da linha minima sem sinal forte de restricao"
     return "monitor", "sem sinal forte suficiente"
 
 
 def risk_level(row: dict[str, Any], action: str, saturation_level: str) -> str:
     if action in {"increase_troas_or_reduce_budget", "reduce_budget_or_fix_cpa"}:
         return "high"
+    if action == "reduce_troas_or_increase_budget":
+        return "medium"
     if saturation_level in {"budget_capped", "high"}:
         return "medium"
     if row["data_sufficiency"] in {"insufficient", "low"}:
@@ -312,12 +430,14 @@ def risk_level(row: dict[str, Any], action: str, saturation_level: str) -> str:
     return "low"
 
 
-def priority_score(row: dict[str, Any], action: str) -> int:
+def priority_score(row: dict[str, Any], action: str, min_profitability_roas: float) -> int:
     base = min(100, int(row["cost"] / 100))
     if action in {"increase_troas_or_reduce_budget", "reduce_budget_or_fix_cpa"}:
-        return min(100, base + 40)
-    if action == "increase_budget":
-        return min(100, base + 25)
+        gap = max(0.0, min_profitability_roas - (row["ga4_roas"] or row["roas"]))
+        return min(100, base + 35 + int(gap * 5))
+    if action in {"increase_budget", "reduce_troas_or_increase_budget"}:
+        upside = max(0.0, (row["ga4_roas"] or row["roas"]) - min_profitability_roas)
+        return min(100, base + 20 + int(upside * 3))
     return base
 
 
@@ -325,6 +445,9 @@ def build_summary(
     daily: list[dict[str, Any]],
     intraday: list[dict[str, Any]],
     recommendations: list[dict[str, Any]],
+    output_dir: Path,
+    file_prefix: str,
+    company_name: str,
 ) -> dict[str, Any]:
     latest_date = max(row["date"] for row in daily)
     latest = [row for row in daily if row["date"] == latest_date]
@@ -334,6 +457,8 @@ def build_summary(
         action_counts[row["recommended_action"]] += 1
         guardrail_counts[row["business_constraints_status"]] += 1
     return {
+        "company": company_name,
+        "file_prefix": file_prefix,
         "period_start": START_DATE.isoformat(),
         "latest_date": latest_date.isoformat(),
         "daily_rows": len(daily),
@@ -346,10 +471,10 @@ def build_summary(
         "action_counts": dict(action_counts),
         "guardrail_counts": dict(guardrail_counts),
         "outputs": {
-            "daily_metrics": str(OUTPUT_DIR / "apice_daily_metrics_2026.csv"),
-            "intraday_forecast": str(OUTPUT_DIR / "apice_intraday_forecast.csv"),
-            "campaign_features": str(OUTPUT_DIR / "apice_campaign_features.csv"),
-            "final_recommendations": str(OUTPUT_DIR / "apice_final_recommendations.csv"),
+            "daily_metrics": str(output_dir / f"{file_prefix}_daily_metrics_2026.csv"),
+            "intraday_forecast": str(output_dir / f"{file_prefix}_intraday_forecast.csv"),
+            "campaign_features": str(output_dir / f"{file_prefix}_campaign_features.csv"),
+            "final_recommendations": str(output_dir / f"{file_prefix}_final_recommendations.csv"),
         },
     }
 
@@ -422,13 +547,15 @@ def trend_status(row: dict[str, Any], roas_28d: float, cpa_28d: float) -> str:
     return "normal"
 
 
-def business_trend_status(row: dict[str, Any], roas_28d: float) -> str:
-    if row["target_roas"]:
-        if row["ga4_roas"] >= row["target_roas"] * 1.15:
-            return "business_above_target_reference"
-        if row["ga4_roas"] < row["target_roas"] * 0.80:
-            return "business_below_target_reference"
-        return "business_near_target_reference"
+def business_trend_status(row: dict[str, Any], roas_28d: float, min_profitability_roas: float) -> str:
+    if min_profitability_roas:
+        if row["ga4_roas"] >= min_profitability_roas * 1.25:
+            return "business_above_profitability"
+        if row["ga4_roas"] >= min_profitability_roas:
+            return "business_profitable"
+        if row["ga4_roas"] >= min_profitability_roas * 0.80:
+            return "business_near_profitability"
+        return "business_below_profitability"
     if roas_28d:
         if row["ga4_roas"] > roas_28d * 1.20:
             return "business_positive_vs_history"

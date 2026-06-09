@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import argparse
 import urllib.request
 from collections import Counter
 from datetime import date
@@ -18,34 +19,56 @@ COMPANY = "Apice"
 
 
 def main() -> None:
-    LOCAL_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    args = parse_args()
+    api_dir = Path(args.api_dir)
+    local_staging_dir = Path(args.output_dir)
+    file_prefix = args.file_prefix
+    company_name = args.company_name
+    company_filter = args.company_name.lower()
+    local_staging_dir.mkdir(parents=True, exist_ok=True)
 
-    settings = read_csv(API_DIR / "apice_campaign_settings.csv")
-    hourly = read_csv(API_DIR / "apice_hourly_metrics.csv")
-    daily = fetch_apice_daily_from_metabase()
+    settings = read_csv(api_dir / f"{file_prefix}_campaign_settings.csv")
+    hourly = read_csv(api_dir / f"{file_prefix}_hourly_metrics.csv")
+    daily = fetch_daily_from_metabase(company_filter)
 
     settings_by_campaign = {str(row["campaign_id"]): row for row in settings}
     daily_enriched = enrich_daily(daily, settings_by_campaign)
     hourly_enriched = enrich_hourly(hourly, settings_by_campaign)
 
-    write_csv(LOCAL_STAGING_DIR / "apice_campaign_daily_enriched.csv", daily_enriched)
-    write_csv(LOCAL_STAGING_DIR / "apice_campaign_hourly_metrics.csv", hourly_enriched)
+    write_csv(local_staging_dir / f"{file_prefix}_campaign_daily_enriched.csv", daily_enriched)
+    write_csv(local_staging_dir / f"{file_prefix}_campaign_hourly_metrics.csv", hourly_enriched)
 
-    summary = build_summary(settings, hourly_enriched, daily_enriched)
-    (LOCAL_STAGING_DIR / "summary.json").write_text(
+    summary = build_summary(
+        settings,
+        hourly_enriched,
+        daily_enriched,
+        local_staging_dir,
+        file_prefix,
+        company_name,
+    )
+    (local_staging_dir / f"{file_prefix}_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
     print(json.dumps(summary, indent=2))
 
 
-def fetch_apice_daily_from_metabase() -> list[dict[str, Any]]:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--company-name", default=COMPANY)
+    parser.add_argument("--file-prefix", default="apice")
+    parser.add_argument("--api-dir", default=str(API_DIR))
+    parser.add_argument("--output-dir", default=str(LOCAL_STAGING_DIR))
+    return parser.parse_args()
+
+
+def fetch_daily_from_metabase(company_filter: str) -> list[dict[str, Any]]:
     bounds_payload = execute_metabase(
-        """
+        f"""
         SELECT
           MIN(date) AS min_date,
           MAX(date) AS max_date
         FROM raw.gogroup_google_ads
-        WHERE LOWER(company) = 'apice'
+        WHERE LOWER(company) = '{company_filter}'
         """
     )
     bounds = bounds_payload.get("data", {}).get("rows", [[]])[0]
@@ -55,12 +78,12 @@ def fetch_apice_daily_from_metabase() -> list[dict[str, Any]]:
     current = date(min_date.year, min_date.month, 1)
     while current <= max_date:
         next_month = month_after(current)
-        rows.extend(fetch_apice_daily_window(current, next_month))
+        rows.extend(fetch_daily_window(current, next_month, company_filter))
         current = next_month
     return rows
 
 
-def fetch_apice_daily_window(start_date: date, end_date: date) -> list[dict[str, Any]]:
+def fetch_daily_window(start_date: date, end_date: date, company_filter: str) -> list[dict[str, Any]]:
     sql = f"""
     WITH ad_daily AS (
       SELECT
@@ -75,7 +98,7 @@ def fetch_apice_daily_window(start_date: date, end_date: date) -> list[dict[str,
         SUM(ads.conversions)::numeric AS conversions,
         SUM(ads.revenue)::numeric AS ads_conversion_value
       FROM raw.gogroup_google_ads AS ads
-      WHERE LOWER(ads.company) = 'apice'
+      WHERE LOWER(ads.company) = '{company_filter}'
         AND ads.date >= DATE '{start_date.isoformat()}'
         AND ads.date < DATE '{end_date.isoformat()}'
       GROUP BY 1, 2, 3
@@ -89,7 +112,7 @@ def fetch_apice_daily_window(start_date: date, end_date: date) -> list[dict[str,
         SUM(ga4.transactions)::numeric AS ga4_transactions,
         SUM(ga4.sessions)::bigint AS ga4_sessions
       FROM raw.ga4_gogroup_all_channels AS ga4
-      WHERE LOWER(ga4.company) = 'apice'
+      WHERE LOWER(ga4.company) = '{company_filter}'
         AND ga4.date >= DATE '{start_date.isoformat()}'
         AND ga4.date < DATE '{end_date.isoformat()}'
         AND LOWER(ga4.source) = 'google'
@@ -105,7 +128,7 @@ def fetch_apice_daily_window(start_date: date, end_date: date) -> list[dict[str,
         campaigns.search_budget_lost_impression_share::numeric AS lost_is_budget,
         campaigns.search_rank_lost_impression_share::numeric AS lost_is_rank
       FROM raw.gogroup_google_ads_campaigns AS campaigns
-      WHERE LOWER(campaigns.company) = 'apice'
+      WHERE LOWER(campaigns.company) = '{company_filter}'
         AND campaigns.date >= DATE '{start_date.isoformat()}'
         AND campaigns.date < DATE '{end_date.isoformat()}'
     )
@@ -226,12 +249,17 @@ def build_summary(
     settings: list[dict[str, str]],
     hourly: list[dict[str, Any]],
     daily: list[dict[str, Any]],
+    output_dir: Path,
+    file_prefix: str,
+    company_name: str,
 ) -> dict[str, Any]:
     latest_daily_date = max(row["date"] for row in daily) if daily else None
     latest_daily = [row for row in daily if row["date"] == latest_daily_date]
     latest_hourly_date = max(row["date"] for row in hourly) if hourly else None
     latest_hourly = [row for row in hourly if row["date"] == latest_hourly_date]
     return {
+        "company": company_name,
+        "file_prefix": file_prefix,
         "settings_rows": len(settings),
         "settings_status": dict(Counter(row["campaign_status"] for row in settings)),
         "daily_rows": len(daily),
@@ -260,9 +288,9 @@ def build_summary(
         "latest_hourly_campaigns": len({row["campaign_id"] for row in latest_hourly}),
         "latest_hourly_hours": sorted({int(row["hour"]) for row in latest_hourly}),
         "outputs": {
-            "daily": str(LOCAL_STAGING_DIR / "apice_campaign_daily_enriched.csv"),
-            "hourly": str(LOCAL_STAGING_DIR / "apice_campaign_hourly_metrics.csv"),
-            "summary": str(LOCAL_STAGING_DIR / "summary.json"),
+            "daily": str(output_dir / f"{file_prefix}_campaign_daily_enriched.csv"),
+            "hourly": str(output_dir / f"{file_prefix}_campaign_hourly_metrics.csv"),
+            "summary": str(output_dir / f"{file_prefix}_summary.json"),
         },
     }
 

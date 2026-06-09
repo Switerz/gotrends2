@@ -77,7 +77,16 @@ source = google
 medium = cpc
 ```
 
-As metas `target_roas` continuam sendo avaliadas contra `ads_roas`, porque o tROAS e a otimizacao do Google Ads podem usar o valor de conversao da propria plataforma. O `ga4_roas` orienta o veredito executivo de receita.
+As metas `target_roas` sao tratadas como alavanca de otimizacao, nao como corte principal de sucesso. A decisao usa `ga4_roas` contra:
+
+```text
+portfolio_segment: institutional, non_brand, brand ou other
+segment_roas_reference: mediana de ROAS GA4 do segmento no ultimo dia
+min_profitability_roas: piso minimo de rentabilidade
+effective_roas_reference: maior valor entre piso minimo e benchmark do segmento
+```
+
+Assim campanhas institucionais sao comparadas com institucionais, campanhas NB com NB, e assim por diante. O `ads_roas` permanece no output para leitura tecnica do Google Ads.
 
 ## Resultado da execucao
 
