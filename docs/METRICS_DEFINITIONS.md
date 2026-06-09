@@ -47,8 +47,10 @@ A tabela principal esta em nivel de anuncio, entao a query agrega primeiro por c
 | `impressions` | Soma de `impressions` no dia/campanha |
 | `clicks` | Soma de `clicks` no dia/campanha |
 | `conversions` | Soma de `conversions` no dia/campanha |
-| `conversion_value` | Soma de `revenue`, usada como valor de conversao enquanto nao houver outro campo confirmado |
-| `revenue_real` | Soma de `revenue`; precisa ser revisada quando houver fonte separada de receita real |
+| `conversion_value` | Soma de `revenue`, equivalente ao valor de conversao atribuido no Google Ads na query base |
+| `ads_conversion_value` | Valor de conversao do Google Ads, preservado na camada local Apice |
+| `ga4_purchase_revenue` | Receita GA4 de `raw.ga4_gogroup_all_channels.purchase_revenue`, filtrada por `source = google` e `medium = cpc` na camada local Apice |
+| `business_revenue` | Receita principal de negocio; na camada local Apice usa `ga4_purchase_revenue` |
 | `budget` | `NULL`, porque budget nao foi encontrado na Sprint 0 |
 | `target_roas` | `NULL`, porque target ROAS nao foi encontrado na Sprint 0 |
 | `target_cpa` | `NULL`, porque target CPA nao foi encontrado na Sprint 0 |
@@ -68,7 +70,9 @@ Todas as divisoes usam `NULLIF(denominador, 0)`.
 | `ctr` | `clicks / impressions` |
 | `cpc` | `cost / clicks` |
 | `cvr` | `conversions / clicks` |
-| `roas` | `conversion_value / cost` |
+| `ads_roas` | `ads_conversion_value / cost` na camada local Apice |
+| `ga4_roas` | `ga4_purchase_revenue / cost` na camada local Apice |
+| `roas` | Na query SQL base, `conversion_value / cost`; na camada local Apice, ROAS de negocio igual a `ga4_roas` |
 | `budget_consumption` | `NULL`, porque `budget` nao existe na fonte atual |
 
 ## `campaign_hourly_metrics`
@@ -113,4 +117,4 @@ Interpretacao:
 - Sem `hour`, nao ha metricas horarias reais.
 - Sem `budget`, nao ha `budget_consumption`.
 - Sem `target_roas` e `target_cpa`, ainda nao ha comparacao contra metas declaradas.
-- Sem fonte separada de receita real, `revenue_real` usa o mesmo valor de `revenue`.
+- Para Apice, a camada local ja usa fonte separada de receita real/negocio via GA4 (`purchase_revenue`). A query SQL base ainda preserva a leitura Google Ads por compatibilidade.
