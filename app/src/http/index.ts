@@ -15,6 +15,7 @@ import { ingestRouter } from './routes/ingest'
 import { chatWebhookRouter } from './routes/chatWebhook'
 import { executeRouter } from './routes/execute'
 import { cronRouter } from './routes/cron'
+import { backtestRouter } from './routes/backtest'
 
 export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/api', healthRouter)
@@ -23,6 +24,7 @@ export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/api/skills', skillsRouter)
   app.route('/api/decision-log', decisionLogRouter)
   app.route('/api/ingest', ingestRouter)
+  app.route('/api/backtest', backtestRouter)
   app.route('/chat', chatWebhookRouter) // serves /chat/webhook
   app.route('/api/execute', executeRouter)
   app.route('/cron', cronRouter)

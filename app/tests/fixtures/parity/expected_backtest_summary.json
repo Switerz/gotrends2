@@ -1,0 +1,10 @@
+{
+  "rows": 20,
+  "evaluated_rows": 17,
+  "candidate_rows": 14,
+  "hit_rate": 0.5714285714285714,
+  "false_positive_rate": 0.2857142857142857,
+  "false_negative_rate": 0.5,
+  "worsened_recommended_rows": 3,
+  "avg_expected_vs_realized_revenue_gap": -2.292857142857141
+}

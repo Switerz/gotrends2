@@ -18,9 +18,10 @@ Layout:
     expected_projected_cos.csv          projected-COS unit cases
     summary.json                        what ran, row counts, seed
 
-Backtesting is intentionally skipped: it consumes a decision/recommendation
-log, not the daily metrics grain. The TS port should add a dedicated fixture
-for it once the decision-log shape is finalized.
+Backtesting adds a parallel synthetic decision log (20 rows, deterministic)
+that exercises hit / false_positive / false_negative / no_followup_data and
+the actionable vs monitor vs blocked partitions consumed by the model in
+`legacy/python/models/backtesting.py`.
 """
 from __future__ import annotations
 
@@ -46,6 +47,9 @@ from models.lever_diagnosis import add_lever_diagnosis  # noqa: E402
 from models.campaign_scores import add_campaign_scores  # noqa: E402
 from models.constraints_optimizer import apply_guardrails  # noqa: E402
 from models.projected_cos import projected_cos, cos_status  # noqa: E402
+from models.backtesting import summarize_backtest, outcome_counts  # noqa: E402
+from dataclasses import asdict  # noqa: E402
+from math import isnan  # noqa: E402
 
 OUT = ROOT / "app" / "tests" / "fixtures" / "parity"
 SEED = 20260610
@@ -408,6 +412,76 @@ def build_projected_cos_fixture() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# --------------------------------------------------------------------------- #
+# Backtesting fixture: a deterministic synthetic decision log of 20 rows.
+# Mixes 15 actionable (increase_budget / reduce_budget), 3 monitor, 2 blocked,
+# with outcomes spanning hit / false_positive / false_negative / no_followup_data
+# so the TS port exercises every branch of `summarize_backtest` + `outcome_counts`.
+# --------------------------------------------------------------------------- #
+BACKTEST_ROWS: list[dict] = [
+    # --- 15 actionable rows -------------------------------------------------
+    # 8 hit (mostly increase_budget + reduce_budget)
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":  120.50, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":  -45.00, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":   88.20, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "increase_budget",  "business_constraints_status": "needs_human_review",   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":   12.10, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "reduce_budget",    "business_constraints_status": "ok",                   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":  -20.00, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "reduce_budget",    "business_constraints_status": "ok",                   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":  -32.50, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "reduce_budget",    "business_constraints_status": "needs_human_review",   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":  -10.00, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":  150.00, "recommended_campaign_worsened_d7": True},
+    # 4 false_positive
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "false_positive",   "expected_vs_realized_revenue_gap_d7": -210.00, "recommended_campaign_worsened_d7": True},
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "false_positive",   "expected_vs_realized_revenue_gap_d7": -300.40, "recommended_campaign_worsened_d7": True},
+    {"recommended_action": "reduce_budget",    "business_constraints_status": "needs_human_review",   "backtest_outcome_d7": "false_positive",   "expected_vs_realized_revenue_gap_d7":   75.00, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "reduce_budget",    "business_constraints_status": "ok",                   "backtest_outcome_d7": "false_positive",   "expected_vs_realized_revenue_gap_d7":  100.00, "recommended_campaign_worsened_d7": False},
+    # 1 mixed: actionable + no_followup_data (excluded from rates)
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "no_followup_data", "expected_vs_realized_revenue_gap_d7": None,    "recommended_campaign_worsened_d7": None},
+    # 2 mixed: actionable + false_negative (label noise — excluded from monitor rates)
+    {"recommended_action": "increase_budget",  "business_constraints_status": "ok",                   "backtest_outcome_d7": "false_negative",   "expected_vs_realized_revenue_gap_d7":   55.00, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "reduce_budget",    "business_constraints_status": "ok",                   "backtest_outcome_d7": "false_negative",   "expected_vs_realized_revenue_gap_d7":  -15.00, "recommended_campaign_worsened_d7": False},
+    # --- 3 monitor rows -----------------------------------------------------
+    {"recommended_action": "monitor",          "business_constraints_status": "ok",                   "backtest_outcome_d7": "false_negative",   "expected_vs_realized_revenue_gap_d7":   40.00, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "monitor",          "business_constraints_status": "ok",                   "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":    0.00, "recommended_campaign_worsened_d7": False},
+    {"recommended_action": "monitor",          "business_constraints_status": "ok",                   "backtest_outcome_d7": "no_followup_data", "expected_vs_realized_revenue_gap_d7": None,    "recommended_campaign_worsened_d7": None},
+    # --- 2 blocked rows (excluded from actionable) --------------------------
+    {"recommended_action": "increase_budget",  "business_constraints_status": "blocked",              "backtest_outcome_d7": "no_followup_data", "expected_vs_realized_revenue_gap_d7": None,    "recommended_campaign_worsened_d7": None},
+    {"recommended_action": "reduce_budget",    "business_constraints_status": "blocked",              "backtest_outcome_d7": "hit",              "expected_vs_realized_revenue_gap_d7":  -50.00, "recommended_campaign_worsened_d7": False},
+]
+
+
+def build_backtest_input() -> pd.DataFrame:
+    return pd.DataFrame(BACKTEST_ROWS)
+
+
+def _jsonable(value: Any) -> Any:  # type: ignore[name-defined]
+    if isinstance(value, float) and isnan(value):
+        return float("nan")  # json.dump will write `NaN`; we serialize via allow_nan=True
+    return value
+
+
+def write_backtest_fixtures() -> tuple[int, int, int]:
+    df = build_backtest_input()
+    # The CSV is the canonical synthetic decision log fed into both Python (here)
+    # and the TS parity test.
+    csv_path = OUT / "input_backtest_decision_log.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"  wrote {csv_path.relative_to(ROOT)}  ({len(df)} rows, {len(df.columns)} cols)")
+
+    rows = df.to_dict(orient="records")
+    summary = asdict(summarize_backtest(rows))
+    counts = outcome_counts(rows)
+
+    summary_path = OUT / "expected_backtest_summary.json"
+    # allow_nan=True so NaN survives the round-trip; the TS test branches on Number.isFinite.
+    summary_path.write_text(json.dumps(summary, indent=2, allow_nan=True) + "\n")
+    print(f"  wrote {summary_path.relative_to(ROOT)}  ({len(summary)} keys)")
+
+    counts_path = OUT / "expected_backtest_outcome_counts.json"
+    counts_path.write_text(json.dumps(counts, indent=2, allow_nan=True) + "\n")
+    print(f"  wrote {counts_path.relative_to(ROOT)}  ({len(counts)} rows)")
+    return len(df), len(summary), len(counts)
+
+
 def write_csv(df: pd.DataFrame, name: str) -> int:
     path = OUT / f"{name}.csv"
     df.to_csv(path, index=False)
@@ -456,6 +530,8 @@ def main() -> None:
     pcos = build_projected_cos_fixture()
     rows_pcos = write_csv(pcos, "expected_projected_cos")
 
+    rows_bt_in, _, rows_bt_counts = write_backtest_fixtures()
+
     summary = {
         "seed": SEED,
         "input_rows": rows_input,
@@ -464,6 +540,7 @@ def main() -> None:
         "date_max": str(sub["date"].max()),
         "intermediate_fixtures": {
             "input_latest_day_enriched": rows_enriched,
+            "input_backtest_decision_log": rows_bt_in,
         },
         "models_with_fixtures": {
             "baseline_trend": rows_bt,
@@ -475,16 +552,9 @@ def main() -> None:
             "campaign_scores": rows_scores,
             "constraints_optimizer": rows_guard,
             "projected_cos": rows_pcos,
+            "backtesting": rows_bt_counts,
         },
-        "models_skipped": {
-            "backtesting": (
-                "Requires a decision/recommendation log with d7 outcomes "
-                "(backtest_outcome_d7, expected_vs_realized_revenue_gap_d7, "
-                "recommended_campaign_worsened_d7) which is not derivable from "
-                "the daily metrics grain. Add a dedicated fixture once the "
-                "decision-log schema is finalized."
-            ),
-        },
+        "models_skipped": {},
         "edge_cases": {
             "c-001": "trending_up_spend",
             "c-002": "trending_down_spend",

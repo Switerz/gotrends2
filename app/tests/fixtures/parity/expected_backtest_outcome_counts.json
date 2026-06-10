@@ -1,0 +1,92 @@
+[
+  {
+    "recommended_action": "increase_budget",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "hit",
+    "rows": 4
+  },
+  {
+    "recommended_action": "reduce_budget",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "hit",
+    "rows": 2
+  },
+  {
+    "recommended_action": "increase_budget",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "false_positive",
+    "rows": 2
+  },
+  {
+    "recommended_action": "increase_budget",
+    "business_constraints_status": "needs_human_review",
+    "backtest_outcome_d7": "hit",
+    "rows": 1
+  },
+  {
+    "recommended_action": "reduce_budget",
+    "business_constraints_status": "needs_human_review",
+    "backtest_outcome_d7": "hit",
+    "rows": 1
+  },
+  {
+    "recommended_action": "reduce_budget",
+    "business_constraints_status": "needs_human_review",
+    "backtest_outcome_d7": "false_positive",
+    "rows": 1
+  },
+  {
+    "recommended_action": "reduce_budget",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "false_positive",
+    "rows": 1
+  },
+  {
+    "recommended_action": "increase_budget",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "no_followup_data",
+    "rows": 1
+  },
+  {
+    "recommended_action": "increase_budget",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "false_negative",
+    "rows": 1
+  },
+  {
+    "recommended_action": "reduce_budget",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "false_negative",
+    "rows": 1
+  },
+  {
+    "recommended_action": "monitor",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "false_negative",
+    "rows": 1
+  },
+  {
+    "recommended_action": "monitor",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "hit",
+    "rows": 1
+  },
+  {
+    "recommended_action": "monitor",
+    "business_constraints_status": "ok",
+    "backtest_outcome_d7": "no_followup_data",
+    "rows": 1
+  },
+  {
+    "recommended_action": "increase_budget",
+    "business_constraints_status": "blocked",
+    "backtest_outcome_d7": "no_followup_data",
+    "rows": 1
+  },
+  {
+    "recommended_action": "reduce_budget",
+    "business_constraints_status": "blocked",
+    "backtest_outcome_d7": "hit",
+    "rows": 1
+  }
+]
