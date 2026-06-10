@@ -4,17 +4,27 @@
 // file under `routes/` and is mounted at a stable URL prefix so the worker
 // entry point (`src/index.ts`) only needs to call `mountApi(app)`.
 //
-// Subsequent phases will add more routers here (recommendations, runs,
-// ingest, chat webhook, execute, cron) — Task 5.1b only wires up health.
+// Subsequent phases will add more routers here:
+//   - Phase 5.3: chat webhook
+//   - Phase 5.4: execute, cron
 
 import type { Hono } from 'hono'
 import type { Env } from '@/index'
 import { healthRouter } from './routes/health'
+import { recsRouter } from './routes/recommendations'
+import { runsRouter } from './routes/runs'
+import { skillsRouter } from './routes/skills'
+import { decisionLogRouter } from './routes/decisionLog'
+import { ingestRouter } from './routes/ingest'
 
 export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/api', healthRouter)
-  // Phase 5.2 will add: recommendations, runs, skills, ingest, decision-log
-  // Phase 5.3 will add: chat webhook
-  // Phase 5.4 will add: execute, cron
+  app.route('/api/recommendations', recsRouter)
+  app.route('/api/runs', runsRouter)
+  app.route('/api/skills', skillsRouter)
+  app.route('/api/decision-log', decisionLogRouter)
+  app.route('/api/ingest', ingestRouter)
+  // Phase 5.3 will add: /chat/webhook
+  // Phase 5.4 will add: /api/execute, /api/cron/*
   return app
 }
