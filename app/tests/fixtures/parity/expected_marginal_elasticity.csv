@@ -1,0 +1,6 @@
+date,company,campaign_id,campaign_name,campaign_type,current_cost,current_conversion_value,current_roas,days_with_spend,positive_revenue_days,model_level_used,marginal_roas,elasticity,recommended_spend_band_min,recommended_spend_band_max
+2026-06-10,Apice,c-001,Synthetic Campaign 001,search,2424.95,11447.04,4.720526196416421,60,57,campaign,0.7258362043402722,0.7338240344146542,1831.37,2424.95
+2026-06-10,Apice,c-002,Synthetic Campaign 002,display,710.57,350.83,0.4937303854651899,60,48,campaign,,1.0970311163808018,710.57,1202.42
+2026-06-10,Apice,c-003,Synthetic Campaign 003,performance_max,1013.23,1694.37,1.6722461829989241,55,46,campaign,,1.088161663633959,941.48,1137.01
+2026-06-10,Apice,c-004,Synthetic Campaign 004,video,114.03,193.06,1.693063228974831,60,52,campaign,,-3.029988339820889,114.03,116.62
+2026-06-10,Apice,c-005,Synthetic Campaign 005,shopping,1000.0,1343.21,1.34321,60,54,campaign_type,,,1000.0,1000.0

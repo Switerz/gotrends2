@@ -1,0 +1,34 @@
+{
+  "seed": 20260610,
+  "input_rows": 300,
+  "campaigns": [
+    "c-001",
+    "c-002",
+    "c-003",
+    "c-004",
+    "c-005"
+  ],
+  "date_min": "2026-04-12",
+  "date_max": "2026-06-10",
+  "models_with_fixtures": {
+    "baseline_trend": 300,
+    "anomaly_detection": 300,
+    "confidence_score": 300,
+    "marginal_elasticity": 5,
+    "saturation": 5,
+    "lever_diagnosis": 5,
+    "campaign_scores": 5,
+    "constraints_optimizer": 5,
+    "projected_cos": 6
+  },
+  "models_skipped": {
+    "backtesting": "Requires a decision/recommendation log with d7 outcomes (backtest_outcome_d7, expected_vs_realized_revenue_gap_d7, recommended_campaign_worsened_d7) which is not derivable from the daily metrics grain. Add a dedicated fixture once the decision-log schema is finalized."
+  },
+  "edge_cases": {
+    "c-001": "trending_up_spend",
+    "c-002": "trending_down_spend",
+    "c-003": "high_variance_with_zero_cost_days",
+    "c-004": "very_low_spend_under_200_brl",
+    "c-005": "constant_1000_brl_spend_near_saturation"
+  }
+}
