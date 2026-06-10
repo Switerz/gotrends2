@@ -5,7 +5,13 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
+    setupFiles: ['./tests/client/setup.ts'],
   },
-  resolve: { alias: { '@': resolve(__dirname, 'src') } },
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
+      '~': resolve(__dirname, 'client'),
+    },
+  },
 })

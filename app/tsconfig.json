@@ -11,7 +11,7 @@
     "skipLibCheck": true,
     "types": ["@cloudflare/workers-types", "vitest/globals"],
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"] }
+    "paths": { "@/*": ["./src/*"], "~/*": ["./client/*"] }
   },
   "include": ["src", "client", "tests"]
 }
