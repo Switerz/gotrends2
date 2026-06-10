@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useRecommendations } from '~/hooks/useRecommendations'
 import { useRuns } from '~/hooks/useRuns'
 import { DEFAULT_ACCOUNT_ID } from '~/lib/constants'
@@ -14,6 +14,7 @@ import { actionLabel } from '~/lib/actionLabels'
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
 export default function Dashboard() {
+  const navigate = useNavigate()
   const recs = useRecommendations()
   const runs = useRuns(DEFAULT_ACCOUNT_ID, 5)
 
@@ -61,7 +62,7 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
             <div className="font-display text-lg text-ink-100">Últimas recomendações</div>
@@ -82,7 +83,6 @@ export default function Dashboard() {
               <Table>
                 <THead>
                   <tr>
-                    <TH>Skill</TH>
                     <TH>Campanha</TH>
                     <TH>Ação</TH>
                     <TH className="text-right">Δ %</TH>
@@ -93,24 +93,28 @@ export default function Dashboard() {
                   {latest.map((r) => (
                     <TR
                       key={r.id}
-                      onClick={() => {
-                        window.location.href = `/recommendations/${r.id}`
-                      }}
+                      onClick={() => navigate(`/recommendations/${r.id}`)}
                     >
-                      <TD className="font-mono text-xs text-ink-300">{r.skill}</TD>
-                      <TD>
+                      <TD className="py-2.5">
                         <Link
                           to={`/recommendations/${r.id}`}
-                          className="text-ink-100 hover:text-sage"
+                          title={r.campaign.name}
+                          className="block text-ink-100 hover:text-sage truncate max-w-[180px]"
                         >
                           {r.campaign.name}
                         </Link>
+                        <div
+                          className="font-mono text-[10px] text-ink-400 truncate max-w-[180px]"
+                          title={r.skill}
+                        >
+                          {r.skill}
+                        </div>
                       </TD>
-                      <TD className="text-ink-200">{actionLabel(r.action)}</TD>
-                      <TD className="text-right font-mono tabular-nums text-ink-200">
+                      <TD className="py-2.5 text-xs text-ink-200">{actionLabel(r.action)}</TD>
+                      <TD className="py-2.5 text-right font-mono tabular-nums text-ink-200">
                         {fmtPct(r.changePercent)}
                       </TD>
-                      <TD>
+                      <TD className="py-2.5">
                         <Badge tone={statusTone(r.status)}>{r.status}</Badge>
                       </TD>
                     </TR>

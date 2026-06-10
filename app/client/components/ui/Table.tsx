@@ -2,7 +2,13 @@ import { type ReactNode } from 'react'
 import clsx from 'clsx'
 
 export function Table({ children, className }: { children: ReactNode; className?: string }) {
-  return <table className={clsx('w-full border-collapse', className)}>{children}</table>
+  // Horizontal scroll on overflow — child stays within Card boundaries.
+  // The wrapper preserves the Card's rounded corners because the parent Card has overflow-hidden.
+  return (
+    <div className="w-full overflow-x-auto">
+      <table className={clsx('w-full border-collapse min-w-max', className)}>{children}</table>
+    </div>
+  )
 }
 
 export function THead({ children }: { children: ReactNode }) {

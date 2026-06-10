@@ -11,7 +11,7 @@ export function Card({ children, className, hover = false }: CardProps) {
   return (
     <div
       className={clsx(
-        'bg-ink-800 hairline rounded-card shadow-inset-hairline',
+        'bg-ink-800 hairline rounded-card shadow-inset-hairline overflow-hidden',
         hover &&
           'transition-all duration-200 ease-editorial hover:-translate-y-px hover:shadow-soft-lift hover:border-ink-500',
         className,

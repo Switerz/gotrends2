@@ -4,6 +4,7 @@ import { useRecommendations } from '~/hooks/useRecommendations'
 import { Card, CardBody } from '~/components/ui/Card'
 import { Badge, guardrailTone, statusTone } from '~/components/ui/Badge'
 import { Table, THead, TBody, TR, TH, TD } from '~/components/ui/Table'
+import { Select, Input } from '~/components/ui/Form'
 import { EmptyState } from '~/components/ui/EmptyState'
 import { Spinner } from '~/components/ui/Spinner'
 import { fmtNumber, fmtPct, fmtRelative } from '~/lib/formatters'
@@ -77,35 +78,36 @@ export default function Recommendations() {
       <p className="text-ink-300 mb-8">Tudo que o agente sugeriu, com guardrails e confiança.</p>
 
       <div className="flex flex-col md:flex-row md:items-center gap-3 mb-6">
-        <select
+        <Select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="bg-ink-800 hairline rounded-card px-3 py-2 text-sm text-ink-100 focus:outline-none focus:ring-2 focus:ring-sage/30"
+          aria-label="Filtrar por status"
         >
           {STATUS_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
+            <option key={o.value} value={o.value} className="bg-ink-800 text-ink-100">
               {o.label}
             </option>
           ))}
-        </select>
+        </Select>
 
-        <select
+        <Select
           value={accountId}
           onChange={(e) => setAccountId(e.target.value)}
-          className="bg-ink-800 hairline rounded-card px-3 py-2 text-sm text-ink-100 focus:outline-none focus:ring-2 focus:ring-sage/30"
+          aria-label="Filtrar por conta"
         >
           {ACCOUNTS.map((a) => (
-            <option key={a.id} value={a.id}>
+            <option key={a.id} value={a.id} className="bg-ink-800 text-ink-100">
               {a.label}
             </option>
           ))}
-        </select>
+        </Select>
 
-        <input
+        <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Buscar campanha…"
-          className="bg-ink-800 hairline rounded-card px-3 py-2 text-sm text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-sage/30 flex-1 md:max-w-xs"
+          className="flex-1 md:max-w-xs"
+          aria-label="Buscar campanha"
         />
 
         <button
