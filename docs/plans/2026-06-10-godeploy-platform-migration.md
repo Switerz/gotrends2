@@ -19,8 +19,9 @@
 ## Convenções do plano
 
 - **Branch:** `feat/godeploy-platform` (já criada)
-- **App diretório raiz:** `/home/pedrorocha/gotrends2/app/`
-- **Python permanece intocado** em `/home/pedrorocha/gotrends2/{models,tools,queries,agent,docs}` até o final da migração
+- **Arquitetura canônica:** `docs/ARCHITECTURE.md` — toda decisão estrutural passa por lá
+- **App diretório raiz:** `/home/pedrorocha/gotrends2/app/` (camadas: `src/{core,lib,models,db,clients,agent,pipeline,http}` + `client/` + `tests/`)
+- **Python original isolado em** `legacy/python/{models,tools,queries,agent}` durante a migração (movido na Task 0.0)
 - **Cada modelo portado tem teste de paridade obrigatório** antes do commit final daquele modelo
 - **Tolerância numérica de paridade:** `1e-6` em todos os campos float; igualdade exata em campos string/bool/int
 - **Commits frequentes:** após cada Step de "passar teste" ou "implementação verde"
@@ -54,6 +55,59 @@ Cada fixture é regenerada por `tools/generate_parity_fixtures.py` (vamos criar)
 ---
 
 # FASE 0 — Setup do worktree e tooling
+
+## Task 0.0: Reorganizar repositório conforme `docs/ARCHITECTURE.md`
+
+**Por que:** antes de qualquer código TS, o Python original precisa sair de `/models`, `/tools`, `/queries`, `/agent` para `legacy/python/` — garante que durante a migração ninguém confunda "código vivo" com "referência de paridade".
+
+**Files:**
+- Move: `models/` → `legacy/python/models/`
+- Move: `queries/` → `legacy/python/queries/`
+- Move: `agent/` → `legacy/python/agent/`
+- Move: `tools/{run_apice_local_models.py, apice_model_smoke.py, apice_enriched_local_smoke.py, build_apice_local_staging.py, generate_apice_final_report.py, analyze_apice_account_2026.py, load_apice_google_ads_staging.py, export_apice_change_history.py, export_apice_google_ads.py, google_ads_mcp_client.py, inspect_ga4_gogroup_all_channels.py}` → `legacy/python/tools/`
+- Mantém em `/tools/` (raiz): apenas scripts cross-stack que vamos criar (`generate_parity_fixtures.py`)
+- Modify: `README.md` (raiz) → apontar para `app/`, `legacy/python/`, e `docs/ARCHITECTURE.md`
+
+**Step 1: Mover diretórios**
+
+```bash
+cd /home/pedrorocha/gotrends2
+mkdir -p legacy/python
+git mv models legacy/python/models
+git mv queries legacy/python/queries
+git mv agent legacy/python/agent
+mkdir -p legacy/python/tools
+git mv tools legacy/python/tools_tmp
+# manter raiz /tools vazia por enquanto (vai ganhar generate_parity_fixtures.py na Task 0.4)
+mkdir -p tools
+mv legacy/python/tools_tmp/* legacy/python/tools/
+rmdir legacy/python/tools_tmp
+```
+
+**Step 2: Ajustar README raiz**
+
+Atualizar para mencionar:
+- `app/` — código novo TS/Worker
+- `legacy/python/` — referência de paridade
+- `docs/ARCHITECTURE.md` — leitura obrigatória antes de mexer
+
+**Step 3: Verificar que nada quebrou**
+
+```bash
+ls legacy/python/{models,queries,agent,tools}
+ls app/  # ainda só src/, public/ do scaffold inicial
+```
+
+Expected: estruturas existem, raiz limpa.
+
+**Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "chore: relocate Python pipeline to legacy/python/ per ARCHITECTURE.md"
+```
+
+---
 
 ## Task 0.1: Criar estrutura base da app
 
@@ -552,6 +606,45 @@ Expected: imprime summary com `input_rows` (~300), 5 campanhas, range de datas.
 ```bash
 git add tools/generate_parity_fixtures.py app/tests/fixtures/parity/
 git commit -m "test: generate parity fixtures from Python baseline (5 Apice campaigns, 60d)"
+```
+
+---
+
+## Task 0.4b: Core types compartilhados
+
+**Por que:** centraliza tipos do domínio para que `models/`, `db/`, `agent/`, `pipeline/` e `http/dto` falem a mesma linguagem.
+
+**Files:**
+- Create: `app/src/core/types.ts`
+- Create: `app/src/core/constants.ts`
+- Create: `app/src/core/errors.ts`
+
+**Step 1:** Mover tipos previstos para `src/db/types.ts` na Task 1.2 (RecommendationRow, etc.) para `src/core/types.ts` — `db/types.ts` re-exporta + adiciona shape físico do row.
+
+**Step 2:** Constants:
+
+```ts
+// src/core/constants.ts
+export const PARITY_TOLERANCE = 1e-6
+export const RECOMMENDATION_TTL_HOURS = 24
+export const OUTCOME_WINDOWS = ['24h', '72h', '7d'] as const
+export type OutcomeWindow = typeof OUTCOME_WINDOWS[number]
+```
+
+**Step 3:** Errors:
+
+```ts
+// src/core/errors.ts
+export class GoTrendsError extends Error { constructor(public code: string, message: string) { super(message) } }
+export class GuardrailBlocked extends GoTrendsError { constructor(reason: string) { super('GUARDRAIL_BLOCKED', reason) } }
+export class ParityViolation extends GoTrendsError { constructor(field: string, actual: unknown, expected: unknown) { super('PARITY_VIOLATION', `${field}: ${actual} vs ${expected}`) } }
+```
+
+**Step 4: Commit**
+
+```bash
+git add app/src/core/
+git commit -m "feat(core): centralize domain types, constants and tagged errors"
 ```
 
 ---
@@ -1181,6 +1274,109 @@ Em cada task:
 
 ---
 
+## Task 2.10b: Skills registry + tools wrappers
+
+**Por que:** os 10 modelos portados são apenas matemática. Para o agente usar, encapsulamos em **skills** (capabilities de negócio) e **tools** (ações atômicas). Ver `docs/ARCHITECTURE.md` para a distinção.
+
+**Files:**
+- Create: `app/src/agent/skills/registry.ts`
+- Create: `app/src/agent/skills/{budgetReallocation,anomalyAlert,confidenceCheck,saturationCheck,cpaSpikeDiagnosis,guardrailsConstraints,projectedCos,roasForecast,weeklyDigest,decisionBacktest}.ts`
+- Create: `app/src/agent/tools/{runModel,postToChat,executeBudgetChange,persistDecision}.ts`
+- Create: `app/tests/agent/skills/registry.test.ts`
+
+**Step 1: Registry**
+
+```ts
+// src/agent/skills/registry.ts
+import type { GodeployDB } from '@/db/bootstrap'
+import * as budgetReallocation from './budgetReallocation'
+// ... outras
+
+export type SkillCategory = 'diagnostic' | 'optimization' | 'reporting'
+export interface SkillContext {
+  db: GodeployDB
+  /* clients injected later */
+}
+export interface SkillDescriptor {
+  key: string
+  displayName: string
+  category: SkillCategory
+  run(input: unknown, ctx: SkillContext): Promise<unknown>
+}
+
+export const SKILLS: SkillDescriptor[] = [
+  budgetReallocation.descriptor,
+  // ... outras
+]
+
+export function findSkill(key: string): SkillDescriptor | undefined {
+  return SKILLS.find(s => s.key === key)
+}
+```
+
+**Step 2: Cada skill exporta `descriptor` + função pura**
+
+```ts
+// src/agent/skills/budgetReallocation.ts
+import type { SkillDescriptor, SkillContext } from './registry'
+import { buildBaselineTrendFeatures } from '@/models/baselineTrend'
+import { /* outros models */ } from '@/models'
+
+export const descriptor: SkillDescriptor = {
+  key: 'budget_reallocation',
+  displayName: 'Budget Reallocation Model',
+  category: 'optimization',
+  run,
+}
+
+async function run(input: { dailyRows: any[] }, _ctx: SkillContext) {
+  const bt = buildBaselineTrendFeatures(input.dailyRows)
+  // ... encadeia modelos, retorna Recommendation[]
+  return { recommendations: [/* ... */] }
+}
+```
+
+**Step 3: Tools — ações reusáveis**
+
+```ts
+// src/agent/tools/runModel.ts
+export async function runModel(name: string, rows: unknown[]) { /* dispatch */ }
+
+// src/agent/tools/postToChat.ts
+export async function postToChat(/* ... */) { /* usa GoogleChatClient */ }
+
+// src/agent/tools/executeBudgetChange.ts
+export async function executeBudgetChange(/* ... */) { /* usa GoogleAdsClient.mutateBudget */ }
+
+// src/agent/tools/persistDecision.ts
+export async function persistDecision(/* ... */) { /* usa RecommendationsRepo */ }
+```
+
+**Step 4: Teste do registry**
+
+```ts
+// tests/agent/skills/registry.test.ts
+import { SKILLS, findSkill } from '@/agent/skills/registry'
+
+it('lists 10 skills mapped to 3 categories', () => {
+  expect(SKILLS.length).toBe(10)
+  const cats = new Set(SKILLS.map(s => s.category))
+  expect(cats).toEqual(new Set(['diagnostic', 'optimization', 'reporting']))
+})
+it('finds by key', () => {
+  expect(findSkill('budget_reallocation')?.displayName).toMatch(/budget/i)
+})
+```
+
+**Step 5: PASS + commit**
+
+```bash
+git add app/src/agent/ app/tests/agent/
+git commit -m "feat(agent): skills registry + tools wrappers per ARCHITECTURE.md"
+```
+
+---
+
 ## Task 2.11: Port do `recommendation_agent` (camada explicativa)
 
 **Files:**
@@ -1676,6 +1872,100 @@ export default { fetch: app.fetch }
 ```
 
 **Step 3:** PASS + commit.
+
+---
+
+## Task 5.1b: Estrutura `http/routes/` e `http/dto/`
+
+**Files:**
+- Create: `app/src/http/middleware.ts`
+- Create: `app/src/http/dto/{recommendation,run,approval}.ts`
+- Create: `app/src/http/routes/{health,runs,recommendations,skills,decisionLog,ingest,chatWebhook,execute,cron}.ts`
+- Modify: `app/src/http/index.ts` para apenas montar rotas
+
+**Step 1: Middleware**
+
+```ts
+// src/http/middleware.ts
+import type { MiddlewareHandler } from 'hono'
+import type { Env } from '@/index'
+
+export const requireIngestToken: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const tok = c.req.header('x-ingest-token')
+  if (tok !== c.env.INGEST_TOKEN) return c.json({ error: 'unauthorized' }, 401)
+  await next()
+}
+
+export const requireCronKey: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const k = c.req.header('x-godeploy-cron')
+  if (!k || k !== c.env.GODEPLOY_CRON_KEY) return c.json({ error: 'forbidden' }, 403)
+  await next()
+}
+```
+
+**Step 2: DTOs** — shapes que cruzam HTTP, separados do row do DB.
+
+```ts
+// src/http/dto/recommendation.ts
+export interface RecommendationDTO {
+  id: string
+  account: { id: string; label: string }
+  campaign: { id: string; name: string }
+  skill: string
+  action: string
+  changePercent: number | null
+  expected: { incrementalCost: number | null; incrementalRevenue: number | null; marginalRoas: number | null }
+  confidence: number | null
+  risk: string | null
+  guardrail: { status: string; reason: string | null }
+  status: string
+  createdAt: string
+}
+
+export function toDTO(row: import('@/db/types').RecommendationRow): RecommendationDTO {
+  return { /* mapping */ } as RecommendationDTO
+}
+```
+
+**Step 3: Routes** — cada arquivo registra suas rotas no router pai.
+
+```ts
+// src/http/routes/recommendations.ts
+import { Hono } from 'hono'
+import { RecommendationsRepo } from '@/db/repos/recommendations'
+import { toDTO } from '@/http/dto/recommendation'
+import type { Env } from '@/index'
+
+export const recsRouter = new Hono<{ Bindings: Env }>()
+recsRouter.get('/', async c => {
+  const status = c.req.query('status')
+  const repo = new RecommendationsRepo(c.env.DB)
+  const rows = status ? await repo.listByStatus(status as any) : await repo.listRecent(100)
+  return c.json(rows.map(toDTO))
+})
+recsRouter.get('/:id', async c => {
+  const repo = new RecommendationsRepo(c.env.DB)
+  const row = await repo.getById(c.req.param('id'))
+  return row ? c.json(toDTO(row)) : c.json({ error: 'not_found' }, 404)
+})
+```
+
+**Step 4: index.ts monta tudo**
+
+```ts
+// src/http/index.ts
+import { Hono } from 'hono'
+import { recsRouter } from './routes/recommendations'
+// ... outros
+import type { Env } from '@/index'
+
+export function mountApi(app: Hono<{ Bindings: Env }>) {
+  app.route('/api/recommendations', recsRouter)
+  // ... outros app.route()
+}
+```
+
+**Step 5:** testes mínimos por rota + commit.
 
 ---
 
