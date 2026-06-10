@@ -54,21 +54,30 @@ export function olsSlope(x: number[], y: number[]): number {
 }
 
 /** pandas.qcut(rank(method='first'), n_bands, labels=False, duplicates='drop').add(1).
- *  Returns the 1-based band index per element preserving original order. */
+ *  Returns the 1-based band index per element preserving original order.
+ *
+ *  Implementation note: pandas qcut on contiguous ranks 1..N places bin edges at
+ *  the linear quantiles 1 + (N-1)*i/k for i = 1..k-1, and assigns each rank to
+ *  the first bin whose right edge is >= rank. The naive floor(((r-1)*k)/N)
+ *  formula diverges from pandas for many N (e.g. N=55, k=4). */
 export function qcutRanks(values: number[], nBands: number): number[] {
   if (values.length === 0) return []
   if (values.length === 1) return [1]
-  const bands = Math.min(nBands, values.length)
+  const n = values.length
+  const bands = Math.min(nBands, n)
   // rank(method='first'): rank by value, ties broken by original index
   const ranked = values
     .map((v, i) => ({ v, i }))
     .sort((a, b) => a.v - b.v || a.i - b.i)
     .map((o, rank) => ({ ...o, rank: rank + 1 }))
-  // assign each rank to a band using equal-count split (qcut semantics)
-  const bucketed = ranked.map(o => ({
-    i: o.i,
-    band: Math.min(bands, Math.floor(((o.rank - 1) * bands) / values.length) + 1),
-  }))
+  // Bin edges at 1 + (n-1)*i/bands for i=1..bands-1. A rank r belongs to band i
+  // iff edges[i-1] < r <= edges[i] (with edges[0]=1, edges[bands]=n).
+  // Equivalent closed-form: ceil((r-1)*bands / (n-1)), clamped to [1, bands].
+  const bucketed = ranked.map(o => {
+    if (o.rank === 1) return { i: o.i, band: 1 }
+    const raw = Math.ceil(((o.rank - 1) * bands) / (n - 1))
+    return { i: o.i, band: Math.max(1, Math.min(bands, raw)) }
+  })
   bucketed.sort((a, b) => a.i - b.i)
   return bucketed.map(b => b.band)
 }
