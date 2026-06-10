@@ -347,6 +347,37 @@ def build_latest_day_enriched(
     return enriched
 
 
+def expand_enriched_for_csv(
+    enriched: pd.DataFrame, elasticity: pd.DataFrame
+) -> pd.DataFrame:
+    """Project the enriched latest-day frame into the wider schema that the
+    saturation / lever / scores / constraints TS ports consume.
+
+    The downstream Python models only need the columns produced by
+    ``build_latest_day_enriched``; the wider columns here (``days_with_spend``,
+    ``positive_revenue_days``, ``model_level_used``, ``target_roas``,
+    ``target_cpa_brl``) are passed through so the TS ports can be tested
+    against the exact same input shape they will receive in production.
+
+    target_roas and target_cpa_brl are emitted as NaN because the synthetic
+    fixture has no ground-truth targets — downstream models gracefully fall
+    back to proxy_target_roas when these are missing.
+    """
+    extras = elasticity[
+        [
+            "company",
+            "campaign_id",
+            "days_with_spend",
+            "positive_revenue_days",
+            "model_level_used",
+        ]
+    ].copy()
+    out = enriched.merge(extras, on=["company", "campaign_id"], how="left")
+    out["target_roas"] = np.nan
+    out["target_cpa_brl"] = np.nan
+    return out
+
+
 def build_projected_cos_fixture() -> pd.DataFrame:
     """A small table of unit cases for projected_cos / cos_status."""
     cases = [
@@ -407,6 +438,9 @@ def main() -> None:
     rows_me = write_csv(me, "expected_marginal_elasticity")
 
     enriched = build_latest_day_enriched(sub, bt, cs, me)
+    rows_enriched = write_csv(
+        expand_enriched_for_csv(enriched, me), "input_latest_day_enriched"
+    )
     sat = add_saturation_features(enriched)
     rows_sat = write_csv(sat, "expected_saturation")
 
@@ -428,6 +462,9 @@ def main() -> None:
         "campaigns": sorted(sub["campaign_id"].unique().tolist()),
         "date_min": str(sub["date"].min()),
         "date_max": str(sub["date"].max()),
+        "intermediate_fixtures": {
+            "input_latest_day_enriched": rows_enriched,
+        },
         "models_with_fixtures": {
             "baseline_trend": rows_bt,
             "anomaly_detection": rows_an,

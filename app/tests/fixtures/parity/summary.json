@@ -10,6 +10,9 @@
   ],
   "date_min": "2026-04-12",
   "date_max": "2026-06-10",
+  "intermediate_fixtures": {
+    "input_latest_day_enriched": 5
+  },
   "models_with_fixtures": {
     "baseline_trend": 300,
     "anomaly_detection": 300,
