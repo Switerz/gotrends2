@@ -3,9 +3,6 @@
 // Mounts every feature router on the root app. Each area lives in its own
 // file under `routes/` and is mounted at a stable URL prefix so the worker
 // entry point (`src/index.ts`) only needs to call `mountApi(app)`.
-//
-// Subsequent phases will add more routers here:
-//   - Phase 5.4: execute, cron
 
 import type { Hono } from 'hono'
 import type { Env } from '@/index'
@@ -16,6 +13,7 @@ import { skillsRouter } from './routes/skills'
 import { decisionLogRouter } from './routes/decisionLog'
 import { ingestRouter } from './routes/ingest'
 import { chatWebhookRouter } from './routes/chatWebhook'
+import { executeRouter } from './routes/execute'
 
 export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/api', healthRouter)
@@ -25,6 +23,6 @@ export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/api/decision-log', decisionLogRouter)
   app.route('/api/ingest', ingestRouter)
   app.route('/chat', chatWebhookRouter) // serves /chat/webhook
-  // Phase 5.4 will add: execute, cron
+  app.route('/api/execute', executeRouter)
   return app
 }
