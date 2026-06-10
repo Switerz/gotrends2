@@ -5,7 +5,6 @@
 // entry point (`src/index.ts`) only needs to call `mountApi(app)`.
 //
 // Subsequent phases will add more routers here:
-//   - Phase 5.3: chat webhook
 //   - Phase 5.4: execute, cron
 
 import type { Hono } from 'hono'
@@ -16,6 +15,7 @@ import { runsRouter } from './routes/runs'
 import { skillsRouter } from './routes/skills'
 import { decisionLogRouter } from './routes/decisionLog'
 import { ingestRouter } from './routes/ingest'
+import { chatWebhookRouter } from './routes/chatWebhook'
 
 export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/api', healthRouter)
@@ -24,7 +24,7 @@ export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/api/skills', skillsRouter)
   app.route('/api/decision-log', decisionLogRouter)
   app.route('/api/ingest', ingestRouter)
-  // Phase 5.3 will add: /chat/webhook
-  // Phase 5.4 will add: /api/execute, /api/cron/*
+  app.route('/chat', chatWebhookRouter) // serves /chat/webhook
+  // Phase 5.4 will add: execute, cron
   return app
 }
