@@ -52,3 +52,23 @@ in a `.env.local` if you want to test live mutate / chat flows.
   `http://localhost:8787/api/health` returns `{"ok":true}`
 - Type errors after pulling — `npm install` to refresh native bindings for
   `better-sqlite3`
+
+## Deploy to Godeploy
+
+Stage the build (Vite + worker source rewrite):
+
+```bash
+npm run stage:deploy
+```
+
+This produces `.deploy/gotrends-agent/` at the repo root with:
+- `index.html`, `favicon.svg`, `assets/index-*.{js,css}` (Vite output)
+- `src/` (worker source with `@/` paths rewritten to relative)
+- `package.json` (only runtime deps)
+
+Then upload via Godeploy MCP tools and call `createApp` (first time) or `updateApp` (subsequent) with:
+- `entrypoint: 'src/index.ts'`
+- `assets: ['index.html', 'favicon.svg', 'assets/index-<HASH>.js', 'assets/index-<HASH>.css']` (use exact hashed names from the build log)
+- `assetConfig: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application' }`
+
+Current production app: https://gotrends-agent.devgogroup.com/ (app id `af427329`).

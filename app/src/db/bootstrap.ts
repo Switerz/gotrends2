@@ -23,7 +23,9 @@ export interface GodeployDB {
 /** Run every DDL statement in `SCHEMA_STATEMENTS` in order. Safe to call repeatedly. */
 export async function bootstrapSchema(db: GodeployDB): Promise<void> {
   for (const stmt of SCHEMA_STATEMENTS) {
-    await db.exec(stmt)
+    // Pass an explicit empty params array: the Godeploy runtime rejects exec()
+    // calls without the second argument, even for parameterless DDL.
+    await db.exec(stmt, [])
   }
 }
 

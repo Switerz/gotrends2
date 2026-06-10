@@ -10,7 +10,8 @@
     "build:client": "vite build",
     "dev:server": "tsx dev/server.ts",
     "dev:client": "vite",
-    "dev": "concurrently -k -n server,client -c yellow,cyan \"npm run dev:server\" \"npm run dev:client\""
+    "dev": "concurrently -k -n server,client -c yellow,cyan \"npm run dev:server\" \"npm run dev:client\"",
+    "stage:deploy": "node scripts/stage-deploy.mjs"
   },
   "dependencies": {
     "@testing-library/jest-dom": "^6.9.1",
