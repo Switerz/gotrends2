@@ -26,6 +26,9 @@ downloads/
 traces/
 *.log
 
+# Godeploy staging directory (contains generated secrets)
+.deploy/
+
 # OS/editor
 .DS_Store
 Thumbs.db
