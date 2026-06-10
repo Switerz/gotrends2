@@ -66,8 +66,8 @@ gotrends2/
 │   │   │   ├── googleChat.ts         ← Card v2 + webhook reply
 │   │   │   └── llm.ts                ← Anthropic SDK (futuro)
 │   │   │
-│   │   ├── agent/                    ← CAMADA LLM + SKILLS REGISTRY
-│   │   │   ├── recommendationAgent.ts ← gera explanation (porta de agent/ Python)
+│   │   ├── agent/                    ← CAMADA LLM + SKILLS REGISTRY + REFINER
+│   │   │   ├── recommendationAgent.ts ← gera explanation textual (porta de agent/ Python)
 │   │   │   ├── prompts/              ← .md/.txt versionados
 │   │   │   │   ├── recommendation.md
 │   │   │   │   └── weeklyDigest.md
@@ -83,11 +83,17 @@ gotrends2/
 │   │   │   │   ├── roasForecast.ts
 │   │   │   │   ├── weeklyDigest.ts
 │   │   │   │   └── decisionBacktest.ts
+│   │   │   ├── refiners/             ← ★ GATE DE INTEGRIDADE: candidate → DB-ready
+│   │   │   │   ├── schema.ts         ← Zod: CandidateSchema, RecommendationSchema
+│   │   │   │   ├── refine.ts         ← validate → enrich → guardrail → validate
+│   │   │   │   ├── enrich.ts         ← derivações (proposed_budget, change_percent, cos)
+│   │   │   │   ├── guardrails.ts     ← regras finais (ports constraints_optimizer)
+│   │   │   │   └── llm.ts            ← opcional/futuro: LLM refina headline/reason
 │   │   │   └── tools/                ← capabilities the agent can call
 │   │   │       ├── runModel.ts       ← invoca um modelo
 │   │   │       ├── postToChat.ts     ← envia card
 │   │   │       ├── executeBudgetChange.ts ← chama Google Ads mutate
-│   │   │       └── persistDecision.ts ← grava em recommendations
+│   │   │       └── persistDecision.ts ← grava em recommendations (usa refiner antes)
 │   │   │
 │   │   ├── pipeline/                 ← ORQUESTRADORES (cron handlers)
 │   │   │   ├── runModels.ts          ← daily: fetch → models → recs pending
@@ -201,19 +207,26 @@ gotrends2/
 ## Regras de dependência (importante)
 
 ```text
-http/         →  pipeline/, agent/, db/repos, clients/, core/, lib/
-pipeline/     →  agent/, models/, db/repos, clients/, core/, lib/
-agent/skills/ →  models/, agent/tools/, core/, lib/
-agent/tools/  →  models/, db/repos, clients/, core/, lib/
+http/            →  pipeline/, agent/, db/repos, clients/, core/, lib/
+pipeline/        →  agent/, models/, db/repos, clients/, core/, lib/
+agent/skills/    →  models/, agent/tools/, agent/refiners/, core/, lib/
+agent/refiners/  →  core/, lib/             (PURO, valida + enriquece)
+agent/tools/     →  models/, db/repos, clients/, agent/refiners/, core/, lib/
 agent/recommendationAgent.ts →  core/, lib/  (sem modelos, sem clients)
-models/       →  lib/, core/         (PURO, sem db/clients/http)
-db/repos/     →  db/types, core/, lib/
-db/bootstrap  →  db/schema
-clients/      →  core/, lib/         (sem db, sem models)
-core/         →  (nada)
-lib/          →  (nada além de stdlib)
-client/       →  apenas via fetch HTTP, NUNCA importa de src/
+models/          →  lib/, core/             (PURO, sem db/clients/http)
+db/repos/        →  db/types, core/, lib/
+db/bootstrap     →  db/schema
+clients/         →  core/, lib/             (sem db, sem models)
+core/            →  (nada)
+lib/             →  (nada além de stdlib)
+client/          →  apenas via fetch HTTP, NUNCA importa de src/
 ```
+
+### O refiner é o ÚNICO caminho de entrada para `recommendations`
+
+Nenhum código deve chamar `RecommendationsRepo.insert()` com um objeto que não tenha passado por `refiners/refine()`. Isso é o que mantém a tabela consistente — todo registro tem os campos corretos, os tipos corretos, e passou pelos guardrails. Quebrar essa regra invalida a auditoria.
+
+Implementação: `tools/persistDecision.ts` chama `refine(candidate)` antes do `repo.insert(...)`. Se algum dia algum outro caller quiser persistir, usa essa tool — não acessa o repo direto.
 
 **Violação dessa direção quebra coesão e impede testar em isolamento.** Lint config opcional pode forçar via `eslint-plugin-boundaries`.
 
@@ -290,13 +303,29 @@ GODEPLOY_CRON_KEY         # injetado pela plataforma
 
 ## Como adicionar uma nova skill (checklist)
 
-1. Cria `src/agent/skills/<nome>.ts` exportando `runSkill(input, ctx)` que retorna `Recommendation[]`
+1. Cria `src/agent/skills/<nome>.ts` exportando `run(input, ctx)` que retorna `Candidate[]` (loose)
 2. Se precisar de modelo novo, adiciona em `src/models/<nome>.ts` (com paridade Python se houver equivalente)
-3. Registra em `src/agent/skills/registry.ts`
-4. Adiciona seed em `db/schema.ts` (`SEED_SKILLS`)
-5. Cria card no Catálogo `client/pages/Skills.tsx`
-6. Testes: `tests/agent/skills/<nome>.test.ts`
-7. Atualiza `docs/<NOME>.md`
+3. Garante que o output bate com `CandidateSchema` em `agent/refiners/schema.ts` (Zod valida em runtime)
+4. Registra em `src/agent/skills/registry.ts`
+5. Adiciona seed em `db/schema.ts` (`SEED_SKILLS`)
+6. Cria card no Catálogo `client/pages/Skills.tsx`
+7. Testes: `tests/agent/skills/<nome>.test.ts`
+8. Atualiza `docs/<NOME>.md`
+
+## Tipos: Candidate vs Recommendation
+
+Dois shapes — propositalmente diferentes:
+
+| | `Candidate` (skill output) | `Recommendation` (DB row) |
+|---|---|---|
+| Onde nasce | `agent/skills/*.run()` | `agent/refiners/refine()` |
+| Validação | leve (forma esperada) | estrita (Zod schema da tabela) |
+| Campos derivados | parciais (só o que skill calculou) | completos (proposed_budget calculado, etc.) |
+| Guardrails | não aplicados | aplicados, `guardrail_status` setado |
+| LLM explanation | ausente | preenchida (ou null se feature flag off) |
+| Pode ir pro DB? | ❌ | ✅ via `RecommendationsRepo` |
+
+Manter os dois separados evita que skill emita campos incorretos e que o refiner vire um "limpador de bagunça" — o contrato é explícito.
 
 ## Como adicionar uma nova tool
 

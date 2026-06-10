@@ -1377,6 +1377,258 @@ git commit -m "feat(agent): skills registry + tools wrappers per ARCHITECTURE.md
 
 ---
 
+## Task 2.10c: Refiner — gate de integridade do banco
+
+**Por que:** o output das skills é solto (campos opcionais, formato variável). A tabela `recommendations` é estrita. O refiner é o **único caminho** entre os dois. Garante que nada chega no DB sem passar por validação Zod + enriquecimento + guardrails.
+
+**Files:**
+- Modify: `app/package.json` (adicionar `zod`)
+- Create: `app/src/agent/refiners/schema.ts`
+- Create: `app/src/agent/refiners/enrich.ts`
+- Create: `app/src/agent/refiners/guardrails.ts`
+- Create: `app/src/agent/refiners/refine.ts`
+- Create: `app/tests/agent/refiners/refine.test.ts`
+
+**Step 1: Adicionar Zod**
+
+```bash
+cd app && npm install zod
+```
+
+**Step 2: Schemas Zod**
+
+```ts
+// src/agent/refiners/schema.ts
+import { z } from 'zod'
+
+export const CandidateSchema = z.object({
+  account_id: z.string(),
+  campaign_id: z.string(),
+  campaign_name: z.string(),
+  skill_type: z.string(),
+  recommended_action: z.enum([
+    'increase_budget', 'reduce_budget',
+    'increase_troas_or_reduce_budget',
+    'optimize_efficiency', 'improve_ads_or_terms',
+    'review_landing_or_offer', 'monitor', 'pause',
+  ]),
+  change_percent: z.number().nullable(),
+  current_budget_brl: z.number().nullable(),
+  current_target_roas: z.number().nullable(),
+  expected_marginal_roas: z.number().nullable(),
+  confidence_score: z.number().int().min(0).max(100).nullable(),
+  risk_level: z.enum(['low', 'medium', 'high']).nullable(),
+  reason: z.string().nullable(),
+  saturation_level: z.string().nullable().optional(),
+  anomaly_flags: z.record(z.string(), z.boolean()).optional(),
+})
+export type Candidate = z.infer<typeof CandidateSchema>
+
+export const RecommendationSchema = CandidateSchema.extend({
+  recommendation_id: z.string().uuid(),
+  run_id: z.string().uuid(),
+  proposed_budget_brl: z.number().nullable(),
+  proposed_target_roas: z.number().nullable(),
+  expected_incremental_cost_brl: z.number().nullable(),
+  expected_incremental_revenue_brl: z.number().nullable(),
+  projected_cos: z.number().nullable(),
+  guardrail_status: z.enum(['ok', 'needs_human_review', 'blocked']),
+  guardrail_reason: z.string().nullable(),
+  llm_payload: z.string().nullable(),
+  llm_explanation: z.string().nullable(),
+  status: z.enum(['pending', 'sent_to_chat', 'approved', 'rejected', 'expired', 'executing', 'executed', 'failed']),
+  expires_at: z.string().nullable(),
+})
+export type Recommendation = z.infer<typeof RecommendationSchema>
+```
+
+**Step 3: Enrichment**
+
+```ts
+// src/agent/refiners/enrich.ts
+import type { Candidate } from './schema'
+
+export function deriveProposedBudget(c: Candidate): number | null {
+  if (c.current_budget_brl === null || c.change_percent === null) return null
+  return Math.round(c.current_budget_brl * (1 + c.change_percent) * 100) / 100
+}
+
+export function deriveExpectedIncrements(c: Candidate, proposedBudget: number | null) {
+  if (c.current_budget_brl === null || proposedBudget === null) {
+    return { cost: null, revenue: null }
+  }
+  const dCost = proposedBudget - c.current_budget_brl
+  const dRev = c.expected_marginal_roas !== null ? dCost * c.expected_marginal_roas : null
+  return { cost: dCost, revenue: dRev }
+}
+
+export function deriveProjectedCos(c: Candidate, expectedRevenue: number | null): number | null {
+  if (expectedRevenue === null || expectedRevenue === 0 || c.current_budget_brl === null) return null
+  const newCost = (c.current_budget_brl ?? 0) * (1 + (c.change_percent ?? 0))
+  return newCost / expectedRevenue
+}
+```
+
+**Step 4: Guardrails (porta a lógica de `models/constraints_optimizer.py` + globais)**
+
+```ts
+// src/agent/refiners/guardrails.ts
+import type { Candidate } from './schema'
+
+export interface GuardrailVerdict {
+  status: 'ok' | 'needs_human_review' | 'blocked'
+  reason: string | null
+}
+
+export function applyGuardrails(c: Candidate): GuardrailVerdict {
+  // confidence muito baixa → review
+  if (c.confidence_score !== null && c.confidence_score < 40) {
+    return { status: 'needs_human_review', reason: 'confidence_below_40' }
+  }
+  // mudança absurda → bloquear (evita acidente: budget 10x da hora pro dia)
+  if (c.change_percent !== null && Math.abs(c.change_percent) > 0.5) {
+    return { status: 'blocked', reason: 'change_above_50pct_hard_limit' }
+  }
+  // anomalia crítica → review
+  if (c.anomaly_flags?.roas_anomaly || c.anomaly_flags?.cost_anomaly) {
+    return { status: 'needs_human_review', reason: 'critical_metric_anomaly' }
+  }
+  // risco alto → review
+  if (c.risk_level === 'high') {
+    return { status: 'needs_human_review', reason: 'risk_level_high' }
+  }
+  return { status: 'ok', reason: null }
+}
+```
+
+**Step 5: Refiner principal**
+
+```ts
+// src/agent/refiners/refine.ts
+import { z } from 'zod'
+import { CandidateSchema, RecommendationSchema, type Candidate, type Recommendation } from './schema'
+import { deriveProposedBudget, deriveExpectedIncrements, deriveProjectedCos } from './enrich'
+import { applyGuardrails } from './guardrails'
+import { GoTrendsError } from '@/core/errors'
+
+export interface RefineContext { runId: string; recommendationId: string }
+
+export function refine(rawCandidate: unknown, ctx: RefineContext): Recommendation {
+  const parsed = CandidateSchema.safeParse(rawCandidate)
+  if (!parsed.success) {
+    throw new GoTrendsError('CANDIDATE_INVALID', z.prettifyError(parsed.error))
+  }
+  const c: Candidate = parsed.data
+
+  const proposed_budget_brl = deriveProposedBudget(c)
+  const inc = deriveExpectedIncrements(c, proposed_budget_brl)
+  const projected_cos = deriveProjectedCos(c, inc.revenue)
+
+  const proposed_target_roas =
+    c.current_target_roas !== null && c.change_percent !== null && c.recommended_action === 'increase_troas_or_reduce_budget'
+      ? Math.round(c.current_target_roas * (1 + Math.abs(c.change_percent)) * 100) / 100
+      : null
+
+  const verdict = applyGuardrails(c)
+
+  const candidate: Recommendation = {
+    ...c,
+    recommendation_id: ctx.recommendationId,
+    run_id: ctx.runId,
+    proposed_budget_brl,
+    proposed_target_roas,
+    expected_incremental_cost_brl: inc.cost,
+    expected_incremental_revenue_brl: inc.revenue,
+    projected_cos,
+    guardrail_status: verdict.status,
+    guardrail_reason: verdict.reason,
+    llm_payload: null,
+    llm_explanation: null,
+    status: 'pending',
+    expires_at: null,
+  }
+
+  const finalCheck = RecommendationSchema.safeParse(candidate)
+  if (!finalCheck.success) {
+    throw new GoTrendsError('RECOMMENDATION_SCHEMA_VIOLATION', z.prettifyError(finalCheck.error))
+  }
+  return finalCheck.data
+}
+```
+
+**Step 6: Testes**
+
+```ts
+// tests/agent/refiners/refine.test.ts
+import { describe, it, expect } from 'vitest'
+import { refine } from '@/agent/refiners/refine'
+import { GoTrendsError } from '@/core/errors'
+
+const ctx = { runId: '00000000-0000-0000-0000-000000000001', recommendationId: '00000000-0000-0000-0000-000000000002' }
+
+describe('refine', () => {
+  it('derives proposed_budget and expected_incremental fields', () => {
+    const r = refine({
+      account_id: '77', campaign_id: 'c1', campaign_name: 'X',
+      skill_type: 'budget_reallocation', recommended_action: 'increase_budget',
+      change_percent: 0.10, current_budget_brl: 1000, current_target_roas: null,
+      expected_marginal_roas: 3, confidence_score: 80, risk_level: 'medium', reason: null,
+    }, ctx)
+    expect(r.proposed_budget_brl).toBe(1100)
+    expect(r.expected_incremental_cost_brl).toBe(100)
+    expect(r.expected_incremental_revenue_brl).toBe(300)
+    expect(r.guardrail_status).toBe('ok')
+  })
+
+  it('blocks change above 50% hard limit', () => {
+    const r = refine({
+      account_id: '77', campaign_id: 'c1', campaign_name: 'X',
+      skill_type: 'budget_reallocation', recommended_action: 'increase_budget',
+      change_percent: 0.80, current_budget_brl: 1000, current_target_roas: null,
+      expected_marginal_roas: 3, confidence_score: 80, risk_level: 'medium', reason: null,
+    }, ctx)
+    expect(r.guardrail_status).toBe('blocked')
+    expect(r.guardrail_reason).toBe('change_above_50pct_hard_limit')
+  })
+
+  it('routes low-confidence to human review', () => {
+    const r = refine({
+      account_id: '77', campaign_id: 'c1', campaign_name: 'X',
+      skill_type: 'budget_reallocation', recommended_action: 'increase_budget',
+      change_percent: 0.10, current_budget_brl: 1000, current_target_roas: null,
+      expected_marginal_roas: 3, confidence_score: 30, risk_level: 'low', reason: null,
+    }, ctx)
+    expect(r.guardrail_status).toBe('needs_human_review')
+  })
+
+  it('throws CANDIDATE_INVALID on malformed input', () => {
+    expect(() => refine({ foo: 'bar' }, ctx)).toThrow(GoTrendsError)
+  })
+
+  it('throws RECOMMENDATION_SCHEMA_VIOLATION if invariants break', () => {
+    // confidence > 100 deve falhar (constraint do schema)
+    expect(() => refine({
+      account_id: '77', campaign_id: 'c1', campaign_name: 'X',
+      skill_type: 'budget_reallocation', recommended_action: 'increase_budget',
+      change_percent: 0.10, current_budget_brl: 1000, current_target_roas: null,
+      expected_marginal_roas: 3, confidence_score: 150, risk_level: 'medium', reason: null,
+    }, ctx)).toThrow()
+  })
+})
+```
+
+**Step 7: PASS + commit**
+
+```bash
+cd app && npm test -- tests/agent/refiners/refine.test.ts
+git add app/src/agent/refiners/ app/tests/agent/refiners/ app/package.json app/package-lock.json
+git commit -m "feat(refiner): Zod-validated gate between skill candidates and DB Recommendation"
+```
+
+**Step 8: Atualizar `tools/persistDecision.ts` para SEMPRE chamar refine antes de inserir** (será feito quando essa tool nascer na Task 2.10b)
+
+---
+
 ## Task 2.11: Port do `recommendation_agent` (camada explicativa)
 
 **Files:**
@@ -2199,7 +2451,7 @@ Manter `tools/generate_parity_fixtures.py` ativo — vira teste de regressão se
 |---|---|
 | 0 | `npm test` verde, fixtures geradas no repo |
 | 1 | Schema + 6 repos com testes verdes |
-| 2 | 10 testes de paridade verdes com `1e-6` |
+| 2 | 10 testes de paridade verdes com `1e-6` + refiner Zod com testes verdes + skills registry |
 | 3 | 3 clientes com testes mockados verdes |
 | 4 | Orquestrador roda contra fixtures e popula DB fake |
 | 5 | API + Webhook + Executor com testes verdes |
