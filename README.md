@@ -4,118 +4,65 @@ Sistema analitico para apoiar decisoes de otimizacao de campanhas de Google Ads 
 
 O principio do projeto e manter a decisao em uma camada deterministica/estatistica e usar LLM apenas para explicar recomendacoes, riscos e restricoes para aprovacao humana.
 
-## Status atual
+## Estrutura do repositorio
 
-Sprint 0, Sprint 1, Sprint 2, Sprint 3, Sprint 4, Sprint 5, Sprint 6, Sprint 7, Sprint 8, Sprint 9 e Sprint 10 concluidas para a camada local da Apice.
+O repositorio esta dividido em duas metades durante a migracao para Godeploy:
 
-Atualizacao: o acesso Google Ads API/MCP foi validado para a conta Apice (`7705857660`). Ja existe export local para `budget`, `target_roas`, `target_cpa` e metricas horarias de Ads. A validacao local sem proxy passou; a carga em `staging.*` no banco ficou pendente porque o Data Mart via Metabase retornou transacao read-only para DDL/DML. Como alternativa, `tools/build_apice_local_staging.py` monta um staging local juntando Data Mart Ads + Data Mart GA4 + CSVs da API.
+```text
+app/            # Worker TypeScript (em construcao) — este sera o sistema vivo
+legacy/python/  # Pipeline Python original — referencia de paridade, nao mais executado em producao
+  models/      # Modelos estatisticos (baseline, confianca, elasticidade, saturacao, scores)
+  queries/     # SQL de feature engineering e recomendacoes finais
+  agent/       # Camada LLM para explicacoes
+  tools/       # Scripts de extracao Google Ads / GA4 e smoke tests locais
+tools/          # Scripts cross-stack (geracao de fixtures de paridade, etc.) — preenchido durante a migracao
+docs/           # Documentacao tecnica
+```
 
-Na camada local Apice, o output agora separa:
+A estrutura canonica esta descrita em `docs/ARCHITECTURE.md` — consulte la antes de mover qualquer coisa.
+
+## Onde estou na migracao
+
+O plano ativo e:
+
+```text
+docs/plans/2026-06-10-godeploy-platform-migration.md
+```
+
+Esse plano define a ordem de tarefas, contratos de dados, e criterios de paridade entre `legacy/python/` e `app/`. Toda mudanca estrutural deve referenciar uma task do plano.
+
+## Status do pipeline original (Python)
+
+Sprint 0 ate Sprint 10 concluidas para a camada local da Apice. Output local separa:
 
 ```text
 ga4_roas = raw.ga4_gogroup_all_channels.purchase_revenue / cost
 ads_roas = Google Ads conversion value / cost
 ```
 
-O `roas` principal do output local e o ROAS de negocio (`ga4_roas`). As comparacoes com `target_roas` continuam usando `ads_roas`.
+O `roas` principal e o ROAS de negocio (`ga4_roas`). Comparacoes com `target_roas` usam `ads_roas`.
 
-Roadmap mestre do projeto:
+A camada Python segue acessivel em `legacy/python/` como fonte de verdade enquanto a paridade com `app/` nao for atingida.
 
-```text
-GOTRENDS_V2_MASTER_PROMPT.md
-```
+## Fonte de dados
 
-Entregaveis criados:
-
-```text
-GOTRENDS_V2_MASTER_PROMPT.md
-DATA_DICTIONARY.md
-queries/00_table_inspection.sql
-queries/01_campaign_daily_metrics.sql
-queries/02_campaign_hourly_metrics.sql
-queries/05_baseline_trend.sql
-queries/06_confidence_features.sql
-queries/07_spend_bands.sql
-queries/08_marginal_roas.sql
-queries/09_saturation_features.sql
-queries/10_campaign_decision_features.sql
-queries/11_final_recommendations.sql
-queries/12_decision_backtest.sql
-queries/13_google_ads_api_staging_contract.sql
-agent/prompts/recommendation_prompt.md
-agent/recommendation_agent.py
-tools/google_ads_mcp_client.py
-tools/export_apice_google_ads.py
-tools/load_apice_google_ads_staging.py
-tools/apice_enriched_local_smoke.py
-tools/build_apice_local_staging.py
-tools/run_apice_local_models.py
-tools/apice_model_smoke.py
-tools/inspect_ga4_gogroup_all_channels.py
-docs/METRICS_DEFINITIONS.md
-docs/BASELINE_TREND.md
-docs/CONFIDENCE_SCORE.md
-docs/MARGINAL_ELASTICITY.md
-docs/SATURATION.md
-docs/CAMPAIGN_SCORES.md
-docs/GUARDRAILS.md
-docs/LLM_AGENT.md
-docs/BACKTESTING.md
-docs/GOOGLE_ADS_API_INTEGRATION.md
-docs/APICE_LOCAL_MODELS.md
-models/baseline_trend.py
-models/anomaly_detection.py
-models/confidence_score.py
-models/marginal_elasticity.py
-models/saturation.py
-models/lever_diagnosis.py
-models/campaign_scores.py
-models/constraints_optimizer.py
-models/projected_cos.py
-models/backtesting.py
-README.md
-```
-
-## Fonte de dados confirmada
-
-Banco no Metabase:
-
-```text
-Data Mart
-```
-
-Tabela principal:
+Banco Metabase: `Data Mart`. Tabelas principais:
 
 ```text
 raw.gogroup_google_ads
-```
-
-Tabelas auxiliares:
-
-```text
 raw.gogroup_google_ads_campaigns
 raw.gogroup_google_ads_keywords
 raw.ga4_gogroup_all_channels
 ```
 
-## Principais conclusoes da Sprint 0
+Detalhes e descobertas em `DATA_DICTIONARY.md`.
 
-- A tabela principal e diaria, em nivel de anuncio.
-- A chave operacional observada e `date + company + campaign_id + ad_group_id + ad_id`.
-- Nao existe campo `hour` na tabela raw do Data Mart. Para Apice, `hour` real foi validado via Google Ads API.
-- Existem `campaign_id`, `campaign_name`, `cost`, `revenue`, `impressions`, `clicks` e `conversions`.
-- `raw.ga4_gogroup_all_channels` tem `purchase_revenue` por `date + company + campaign + source + medium` e foi integrada para ROAS de negocio em `source = google` e `medium = cpc`.
-- `budget`, `target_roas`, `target_cpa`, `search_term` e indicador de aprendizado nao foram encontrados.
-- `status`, `bidding_strategy_type` e share de impressao existem na tabela auxiliar `raw.gogroup_google_ads_campaigns`.
+## Documentacao essencial
 
-## Proximo passo recomendado
+- `docs/ARCHITECTURE.md` — estrutura canonica do repo e contratos por camada
+- `docs/plans/2026-06-10-godeploy-platform-migration.md` — plano ativo de migracao
+- `GOTRENDS_V2_MASTER_PROMPT.md` — visao mestra do produto e roadmap original
+- `DATA_DICTIONARY.md` — descobertas sobre as fontes de dados
+- `docs/METRICS_DEFINITIONS.md` e demais notas em `docs/*.md` — semantica de cada modelo
 
-Antes de levar a camada local para producao:
-
-1. Carregar a extracao Google Ads API em staging para `campaign_hourly_metrics` e settings.
-2. Carregar ou materializar a agregacao GA4 por campanha/dia em staging.
-3. Confirmar flags de aprendizado/teste e bloqueios manuais.
-
-Sem permissao de escrita no Data Mart, esses passos seguem funcionando em staging local dentro de `outputs/`.
-
-Para qualquer proxima etapa, leia primeiro `GOTRENDS_V2_MASTER_PROMPT.md` e depois confira as conclusoes atuais em `DATA_DICTIONARY.md`.
+Para qualquer proxima etapa: leia primeiro `docs/ARCHITECTURE.md`, depois o plano de migracao, e so entao mexa em codigo.
