@@ -13,5 +13,5 @@
     "baseUrl": ".",
     "paths": { "@/*": ["./src/*"], "~/*": ["./client/*"] }
   },
-  "include": ["src", "client", "tests"]
+  "include": ["src", "client", "tests", "dev"]
 }

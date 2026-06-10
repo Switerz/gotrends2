@@ -15,5 +15,11 @@ export default defineConfig({
     outDir: 'dist/client',
     emptyOutDir: true,
   },
-  server: { port: 5173 },
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': 'http://localhost:8787',
+      '/chat': 'http://localhost:8787',
+    },
+  },
 })

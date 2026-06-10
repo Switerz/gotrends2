@@ -4,3 +4,6 @@ dist
 .env
 .env.local
 *.log
+dev.db
+dev.db-shm
+dev.db-wal
