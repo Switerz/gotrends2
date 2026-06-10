@@ -41,7 +41,7 @@ export interface ModelRunRow {
   account_id: string
   run_ts: string
   pipeline_version: string
-  status: 'running' | 'succeeded' | 'failed'
+  status: 'running' | 'success' | 'partial' | 'failed'
   n_campaigns_scanned: number | null
   n_recommendations: number | null
   input_window_start: string | null

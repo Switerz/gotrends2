@@ -163,8 +163,26 @@ describe('POST /chat/webhook', () => {
     expect(await res.json()).toEqual({ error: 'unauthorized' })
   })
 
-  it('returns 200 when no verification token is configured (dev mode degrades open)', async () => {
-    const { env, db } = makeBootstrapTolerantEnv() // no token set
+  it('returns 500 server_misconfigured when both token and dev opt-in are absent (fail-closed)', async () => {
+    const { env, db } = makeBootstrapTolerantEnv() // no token, no opt-in
+    await seedRecommendationAsync(db)
+    const res = await worker.fetch(
+      webhookRequest(
+        buildInteractionPayload({ action: 'approve', recommendationId: 'rec-test-1' }),
+      ),
+      env,
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { error: string; detail: string }
+    expect(body.error).toBe('server_misconfigured')
+    expect(body.detail).toMatch(/GOOGLE_CHAT_VERIFICATION_TOKEN/)
+  })
+
+  it('returns 200 when ALLOW_UNAUTHENTICATED_CHAT=1 (explicit dev opt-in)', async () => {
+    const { env, db } = makeBootstrapTolerantEnv({
+      ALLOW_UNAUTHENTICATED_CHAT: '1',
+    })
     await seedRecommendationAsync(db)
     const res = await worker.fetch(
       webhookRequest(
@@ -179,7 +197,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('approve happy path: flips status to approved + writes approval + chat_messages', async () => {
-    const { env, db } = makeBootstrapTolerantEnv()
+    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
     await seedRecommendationAsync(db, { recommendation_id: 'rec-approve' })
 
     const res = await worker.fetch(
@@ -217,7 +235,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('reject happy path: flips status to rejected', async () => {
-    const { env, db } = makeBootstrapTolerantEnv()
+    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
     await seedRecommendationAsync(db, { recommendation_id: 'rec-reject' })
 
     const res = await worker.fetch(
@@ -239,7 +257,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 404 when the recommendation does not exist', async () => {
-    const { env } = makeBootstrapTolerantEnv()
+    const { env } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'approve', recommendationId: 'rec-missing' }),
@@ -252,7 +270,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 409 when the recommendation is already in a terminal state', async () => {
-    const { env, db } = makeBootstrapTolerantEnv()
+    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
     await seedRecommendationAsync(db, {
       recommendation_id: 'rec-terminal',
       status: 'executed',
@@ -271,7 +289,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 400 when the payload is malformed (missing rec parameter)', async () => {
-    const { env, db } = makeBootstrapTolerantEnv()
+    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
     await seedRecommendationAsync(db)
     const res = await worker.fetch(
       webhookRequest(
@@ -287,7 +305,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 400 when the body is not valid JSON', async () => {
-    const { env } = makeBootstrapTolerantEnv()
+    const { env } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
     const res = await worker.fetch(
       webhookRequest('not-json-{', { headers: {} }),
       env,
@@ -298,7 +316,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('idempotency: a second click after approval returns 409', async () => {
-    const { env, db } = makeBootstrapTolerantEnv()
+    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
     await seedRecommendationAsync(db, { recommendation_id: 'rec-double' })
     const payload = buildInteractionPayload({ action: 'approve', recommendationId: 'rec-double' })
 

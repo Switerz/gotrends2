@@ -35,7 +35,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     account_id TEXT NOT NULL REFERENCES accounts(account_id),
     run_ts TEXT NOT NULL DEFAULT (datetime('now')),
     pipeline_version TEXT NOT NULL,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'success', 'partial', 'failed')),
     n_campaigns_scanned INTEGER,
     n_recommendations INTEGER,
     input_window_start TEXT,

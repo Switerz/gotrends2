@@ -25,6 +25,7 @@ import { GoogleAdsClient } from '@/clients/googleAds'
 import { ExecutionsRepo } from '@/db/repos/executions'
 import { RecommendationsRepo } from '@/db/repos/recommendations'
 import { uuid } from '@/lib/uuid'
+import { requireExecuteToken } from '../middleware'
 
 /** Factory that constructs (or returns null) a GoogleAdsClient from env secrets. */
 export type GoogleAdsClientFactory = (env: Env) => GoogleAdsClient | null
@@ -57,6 +58,7 @@ export function executeRouterFactory(
   clientFactory: GoogleAdsClientFactory = buildGoogleAdsClient,
 ): Hono<{ Bindings: Env }> {
   const router = new Hono<{ Bindings: Env }>()
+  router.use('*', requireExecuteToken)
 
   router.post('/:id', async (c) => {
     const recsRepo = new RecommendationsRepo(c.env.DB)

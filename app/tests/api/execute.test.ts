@@ -31,6 +31,7 @@ import { makeFakeDb } from '../db/repos/_fakeDb'
 const REC_ID = '00000000-0000-4000-8000-00000000aaaa'
 const ACCOUNT_ID = '7705857660'
 const CAMPAIGN_ID = 'c-001'
+const TEST_EXECUTE_TOKEN = 'test-execute-token'
 
 function baseRow(
   overrides: Partial<RecommendationRow> = {},
@@ -98,13 +99,18 @@ async function setupApp(opts: {
   fakeClient?: GoogleAdsClient | null
   /** When true, drive the default factory (env-based) rather than injecting a client. */
   useDefaultFactory?: boolean
+  /** When true, omit EXECUTE_TOKEN from env (used to test 500 fail-closed). */
+  omitExecuteToken?: boolean
 }) {
   const db = makeFakeDb()
   if (opts.row) {
     const recsRepo = new RecommendationsRepo(db)
     await recsRepo.insert(opts.row)
   }
-  const env = { DB: db } as unknown as Env
+  const env = {
+    DB: db,
+    ...(opts.omitExecuteToken ? {} : { EXECUTE_TOKEN: TEST_EXECUTE_TOKEN }),
+  } as unknown as Env
   const factory = opts.useDefaultFactory
     ? buildGoogleAdsClient
     : () => opts.fakeClient ?? null
@@ -114,9 +120,18 @@ async function setupApp(opts: {
   return { app, env, db }
 }
 
-async function post(app: Hono<{ Bindings: Env }>, env: Env, id: string) {
+async function post(
+  app: Hono<{ Bindings: Env }>,
+  env: Env,
+  id: string,
+  opts: { omitToken?: boolean; token?: string } = {},
+) {
+  const headers: Record<string, string> = {}
+  if (!opts.omitToken) {
+    headers['x-execute-token'] = opts.token ?? TEST_EXECUTE_TOKEN
+  }
   return app.fetch(
-    new Request(`http://x/api/execute/${id}`, { method: 'POST' }),
+    new Request(`http://x/api/execute/${id}`, { method: 'POST', headers }),
     env,
   )
 }
@@ -288,5 +303,29 @@ describe('POST /api/execute/:id', () => {
     expect(execs.length).toBe(2)
     const attempts = execs.map((r) => r.attempt_number).sort()
     expect(attempts).toEqual([1, 2])
+  })
+
+  it('401 without execute token', async () => {
+    const { app, env } = await setupApp({
+      row: baseRow(),
+      fakeClient: makeFakeClient().client,
+    })
+    const res = await post(app, env, REC_ID, { omitToken: true })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'unauthorized' })
+  })
+
+  it('500 server_misconfigured when EXECUTE_TOKEN env missing', async () => {
+    const { app, env } = await setupApp({
+      row: baseRow(),
+      fakeClient: makeFakeClient().client,
+      omitExecuteToken: true,
+    })
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({
+      error: 'server_misconfigured',
+      detail: 'EXECUTE_TOKEN not set',
+    })
   })
 })

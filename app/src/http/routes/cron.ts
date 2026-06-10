@@ -128,23 +128,44 @@ cronRouter.post('/send-to-chat', async (c) => {
       skipped.push(rec.recommendation_id)
       continue
     }
+
+    // Idempotency: skip if we've already posted an outbound card for this rec.
+    // The chat_messages table is the durable dedupe key: an outbound row exists
+    // iff we have already (or attempted to) post a card.
+    const priorMessages = await chatRepo.listByRecommendation(rec.recommendation_id)
+    const alreadySent = priorMessages.some((m) => m.direction === 'outbound')
+    if (alreadySent) {
+      // Reconcile drift: if status is still 'pending' but a card was sent,
+      // bring the status forward so subsequent passes see the final state.
+      if (rec.status === 'pending') {
+        await recsRepo.setStatus(rec.recommendation_id, 'sent_to_chat')
+      }
+      skipped.push(rec.recommendation_id)
+      continue
+    }
+
+    const card = buildRecommendationCard({
+      recommendationId: rec.recommendation_id,
+      headline: `${rec.recommended_action} em ${rec.campaign_name}`,
+      campaign: rec.campaign_name,
+      changePercent: rec.change_percent,
+      expectedRevenueBrl: rec.expected_incremental_revenue_brl,
+      expectedCostBrl: rec.expected_incremental_cost_brl,
+      marginalRoas: rec.expected_marginal_roas,
+      confidence: rec.confidence_score,
+      risk: rec.risk_level,
+      guardrailStatus: rec.guardrail_status as
+        | 'ok'
+        | 'needs_human_review'
+        | 'blocked',
+    })
+
+    // Insert the outbound chat_messages row FIRST (in-flight marker). If the
+    // insert fails no post happened — safe to retry. If the insert succeeds
+    // but the post fails, the row remains as a "do-not-retry" guard so we
+    // never double-post the same card to Google Chat. Operators can manually
+    // delete a stuck row to retry — accepted trade-off vs duplicate cards.
     try {
-      const card = buildRecommendationCard({
-        recommendationId: rec.recommendation_id,
-        headline: `${rec.recommended_action} em ${rec.campaign_name}`,
-        campaign: rec.campaign_name,
-        changePercent: rec.change_percent,
-        expectedRevenueBrl: rec.expected_incremental_revenue_brl,
-        expectedCostBrl: rec.expected_incremental_cost_brl,
-        marginalRoas: rec.expected_marginal_roas,
-        confidence: rec.confidence_score,
-        risk: rec.risk_level,
-        guardrailStatus: rec.guardrail_status as
-          | 'ok'
-          | 'needs_human_review'
-          | 'blocked',
-      })
-      await chat.postCard(webhookUrl, card)
       await chatRepo.insert({
         message_id: uuid(),
         recommendation_id: rec.recommendation_id,
@@ -154,9 +175,20 @@ cronRouter.post('/send-to-chat', async (c) => {
         thread_id: null,
         payload: JSON.stringify(card),
       })
+    } catch (e) {
+      errors.push({
+        id: rec.recommendation_id,
+        error: `chat_messages_insert_failed: ${(e as Error).message}`,
+      })
+      continue
+    }
+
+    try {
+      await chat.postCard(webhookUrl, card)
       await recsRepo.setStatus(rec.recommendation_id, 'sent_to_chat')
       sent.push(rec.recommendation_id)
     } catch (e) {
+      // Post failed but the chat_messages row exists; next cron skips this rec.
       errors.push({
         id: rec.recommendation_id,
         error: (e as Error).message,

@@ -27,6 +27,8 @@ export interface Env {
   GOOGLE_CHAT_VERIFICATION_TOKEN?: string
   INGEST_TOKEN?: string
   GODEPLOY_CRON_KEY?: string
+  EXECUTE_TOKEN?: string
+  ALLOW_UNAUTHENTICATED_CHAT?: string
 }
 
 let bootstrapped = false

@@ -52,7 +52,7 @@ function makeRun(over: Partial<Row> = {}): Row {
     account_id: 'acc-1',
     run_ts: '2026-01-01 00:00:00',
     pipeline_version: '0.1.0',
-    status: 'succeeded',
+    status: 'success',
     n_campaigns_scanned: 5,
     n_recommendations: 3,
     input_window_start: '2025-12-25',

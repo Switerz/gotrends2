@@ -130,9 +130,9 @@ export async function seedDevData(db: GodeployDB): Promise<SeedResult> {
 
   // 3 runs (today, yesterday, last week)
   const runs = [
-    { status: 'succeeded' as const, n_campaigns: 5, n_recs: 12 },
-    { status: 'succeeded' as const, n_campaigns: 5, n_recs: 10 },
-    { status: 'succeeded' as const, n_campaigns: 5, n_recs: 8 },
+    { status: 'success' as const, n_campaigns: 5, n_recs: 12 },
+    { status: 'success' as const, n_campaigns: 5, n_recs: 10 },
+    { status: 'success' as const, n_campaigns: 5, n_recs: 8 },
   ]
   const createdRunIds: string[] = []
   for (const r of runs) {

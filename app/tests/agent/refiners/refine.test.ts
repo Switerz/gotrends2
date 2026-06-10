@@ -143,6 +143,30 @@ describe('refine', () => {
       }),
     ).toThrow(RecommendationSchemaViolation)
   })
+
+  // ---------------------------------------------------------------------------
+  // Boundary tests for guardrail thresholds.
+  // ---------------------------------------------------------------------------
+
+  it('change_percent exactly at MAX (0.5) is ok', () => {
+    const r = refine({ ...baseCandidate, change_percent: 0.5 }, ctx)
+    expect(r.guardrail_status).toBe('ok')
+  })
+
+  it('change_percent exactly at -MAX (-0.5) is ok', () => {
+    const r = refine({ ...baseCandidate, change_percent: -0.5 }, ctx)
+    expect(r.guardrail_status).toBe('ok')
+  })
+
+  it('confidence_score exactly at threshold (40) is ok', () => {
+    const r = refine({ ...baseCandidate, confidence_score: 40 }, ctx)
+    expect(r.guardrail_status).toBe('ok')
+  })
+
+  it('confidence_score one below threshold (39) is needs_human_review', () => {
+    const r = refine({ ...baseCandidate, confidence_score: 39 }, ctx)
+    expect(r.guardrail_status).toBe('needs_human_review')
+  })
 })
 
 describe('applyGuardrails', () => {

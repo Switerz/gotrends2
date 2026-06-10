@@ -27,6 +27,23 @@ export const requireIngestToken: MiddlewareHandler<{ Bindings: Env }> = async (c
 }
 
 /**
+ * Require `X-Execute-Token` header matching `env.EXECUTE_TOKEN`. Protects the
+ * /api/execute/:id endpoint, which performs live Google Ads mutates. Fails
+ * closed when the env var is unset.
+ */
+export const requireExecuteToken: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const expected = c.env.EXECUTE_TOKEN
+  if (!expected) {
+    return c.json({ error: 'server_misconfigured', detail: 'EXECUTE_TOKEN not set' }, 500)
+  }
+  const got = c.req.header('x-execute-token')
+  if (got !== expected) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  await next()
+}
+
+/**
  * Require `X-Godeploy-Cron` header matching `env.GODEPLOY_CRON_KEY`. Godeploy
  * stamps this header on every cron-triggered POST, so we can verify the
  * request came from the platform scheduler and not an attacker.

@@ -29,11 +29,24 @@ export const chatWebhookRouter = new Hono<{ Bindings: Env }>()
 /** POST /chat/webhook — invoked by Google Chat on button click. */
 chatWebhookRouter.post('/webhook', async (c) => {
   // Lightweight auth: Google Chat is configured with a verification token at
-  // bot registration time. In dev environments the env var may be absent — in
-  // that case we degrade open (allow). When the env var IS set we require the
-  // request to carry it either via Authorization: Bearer <token> or ?token=.
+  // bot registration time. Fails closed by default: if the env var is unset we
+  // return 500 server_misconfigured unless the explicit dev opt-in
+  // `ALLOW_UNAUTHENTICATED_CHAT=1` is set. When the env var IS set we require
+  // the request to carry it either via Authorization: Bearer <token> or ?token=.
   const expected = c.env.GOOGLE_CHAT_VERIFICATION_TOKEN
-  if (expected) {
+  const allowUnauth = c.env.ALLOW_UNAUTHENTICATED_CHAT === '1'
+  if (!expected) {
+    if (!allowUnauth) {
+      return c.json(
+        {
+          error: 'server_misconfigured',
+          detail: 'GOOGLE_CHAT_VERIFICATION_TOKEN not set',
+        },
+        500,
+      )
+    }
+    // explicit dev opt-in: accept without verification
+  } else {
     const authHeader = c.req.header('authorization') ?? ''
     const bearer = authHeader.replace(/^Bearer\s+/i, '')
     const queryTok = c.req.query('token') ?? ''
