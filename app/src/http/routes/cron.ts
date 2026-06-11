@@ -65,21 +65,30 @@ function buildClients(env: Env): BuiltClients {
 // ---------------------------------------------------------------------------
 // POST /cron/run-models     (daily 06:00 UTC)
 // ---------------------------------------------------------------------------
-cronRouter.post('/run-models', async (c) => {
-  const { metabase, googleAds } = buildClients(c.env)
+/**
+ * Run the recommendation models for every active account. Extracted so both
+ * the cron route and the manual admin-trigger route can invoke identical
+ * logic without duplicating client-construction or per-account error
+ * handling.
+ */
+export async function runModelsForAllAccounts(env: Env): Promise<
+  | { skipped: true; reason: 'env_missing'; missing: { metabase: boolean; googleAds: boolean } }
+  | { ran: number; results: unknown[] }
+> {
+  const { metabase, googleAds } = buildClients(env)
   if (!metabase || !googleAds) {
-    return c.json({
+    return {
       skipped: true,
       reason: 'env_missing',
       missing: { metabase: !metabase, googleAds: !googleAds },
-    })
+    }
   }
-  const accounts = await new AccountsRepo(c.env.DB).listActive()
+  const accounts = await new AccountsRepo(env.DB).listActive()
   const nowIso = new Date().toISOString()
   const results: unknown[] = []
   for (const acc of accounts) {
     const loginCustomerId =
-      acc.login_customer_id ?? c.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID
+      acc.login_customer_id ?? env.GOOGLE_ADS_LOGIN_CUSTOMER_ID
     if (!loginCustomerId) {
       results.push({
         accountId: acc.account_id,
@@ -89,7 +98,7 @@ cronRouter.post('/run-models', async (c) => {
     }
     try {
       const r = await runModelsForAccount(
-        c.env.DB,
+        env.DB,
         metabase,
         googleAds,
         {
@@ -107,19 +116,31 @@ cronRouter.post('/run-models', async (c) => {
       })
     }
   }
-  return c.json({ ran: results.length, results })
-})
+  return { ran: results.length, results }
+}
+
+cronRouter.post('/run-models', async (c) =>
+  c.json(await runModelsForAllAccounts(c.env)),
+)
 
 // ---------------------------------------------------------------------------
 // POST /cron/send-to-chat    (every 15 minutes)
 // ---------------------------------------------------------------------------
-cronRouter.post('/send-to-chat', async (c) => {
-  const webhookUrl = c.env.GOOGLE_CHAT_WEBHOOK_URL
+/**
+ * Drain pending recommendations to Google Chat, idempotently. Extracted so
+ * both the cron route and the manual admin-trigger route can invoke
+ * identical logic.
+ */
+export async function sendPendingToChat(env: Env): Promise<
+  | { skipped: true; reason: 'no_webhook' }
+  | { sent: number; skipped: number; errors: Array<{ id: string; error: string }> }
+> {
+  const webhookUrl = env.GOOGLE_CHAT_WEBHOOK_URL
   if (!webhookUrl) {
-    return c.json({ skipped: true, reason: 'no_webhook' })
+    return { skipped: true, reason: 'no_webhook' }
   }
-  const recsRepo = new RecommendationsRepo(c.env.DB)
-  const chatRepo = new ChatRepo(c.env.DB)
+  const recsRepo = new RecommendationsRepo(env.DB)
+  const chatRepo = new ChatRepo(env.DB)
   const chat = new GoogleChatClient()
   const pending = await recsRepo.listByStatus('pending', 50)
   const sent: string[] = []
@@ -197,8 +218,12 @@ cronRouter.post('/send-to-chat', async (c) => {
       })
     }
   }
-  return c.json({ sent: sent.length, skipped: skipped.length, errors })
-})
+  return { sent: sent.length, skipped: skipped.length, errors }
+}
+
+cronRouter.post('/send-to-chat', async (c) =>
+  c.json(await sendPendingToChat(c.env)),
+)
 
 // ---------------------------------------------------------------------------
 // POST /cron/outcomes/24h    (daily 07:00 UTC)
@@ -278,7 +303,7 @@ async function fetchActualsForCampaign(
   }
 }
 
-async function computeOutcomesWindow(
+export async function computeOutcomesWindow(
   env: Env,
   hours: 24 | 72,
   nowMs: number = Date.now(),

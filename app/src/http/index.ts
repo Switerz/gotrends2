@@ -15,6 +15,7 @@ import { ingestRouter } from './routes/ingest'
 import { chatWebhookRouter } from './routes/chatWebhook'
 import { executeRouter } from './routes/execute'
 import { cronRouter } from './routes/cron'
+import { adminTriggerRouter } from './routes/adminTrigger'
 import { backtestRouter } from './routes/backtest'
 import { authRouter } from './routes/auth'
 
@@ -30,5 +31,6 @@ export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
   app.route('/chat', chatWebhookRouter) // serves /chat/webhook
   app.route('/api/execute', executeRouter)
   app.route('/cron', cronRouter)
+  app.route('/api/admin/trigger', adminTriggerRouter)
   return app
 }
