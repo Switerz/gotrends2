@@ -13,7 +13,7 @@ const GOOGLE_USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo'
 const DEFAULT_APP_ORIGIN = 'https://gotrends-agent.devgogroup.com'
 
 function redirectUri(env: Env): string {
-  return `${env.APP_ORIGIN ?? DEFAULT_APP_ORIGIN}/auth/callback`
+  return `${env.APP_ORIGIN ?? DEFAULT_APP_ORIGIN}/api/auth/callback`
 }
 
 export function buildAuthorizeUrl(env: Env, state: string): string {

@@ -25,12 +25,12 @@ function makeEnv(over: Partial<Env> = {}): Env {
   } as Env
 }
 
-describe('GET /auth/login', () => {
+describe('GET /api/auth/login', () => {
   beforeEach(() => _resetBootstrapForTests())
 
   it('redirects to Google with a state cookie set', async () => {
     const res = await worker.fetch(
-      new Request('http://x/auth/login'),
+      new Request('http://x/api/auth/login'),
       makeEnv(),
       {} as ExecutionContext,
     )
@@ -38,7 +38,7 @@ describe('GET /auth/login', () => {
     const loc = res.headers.get('location') ?? ''
     expect(loc).toMatch(/^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/)
     expect(loc).toMatch(/client_id=test-client-id/)
-    expect(loc).toMatch(/redirect_uri=https%3A%2F%2Fgotrends-agent\.devgogroup\.com%2Fauth%2Fcallback/)
+    expect(loc).toMatch(/redirect_uri=https%3A%2F%2Fgotrends-agent\.devgogroup\.com%2Fapi%2Fauth%2Fcallback/)
     expect(loc).toMatch(/scope=openid\+email\+profile/)
     const cookie = res.headers.get('set-cookie') ?? ''
     expect(cookie).toMatch(/gotrends_oauth_state=/)
@@ -46,7 +46,7 @@ describe('GET /auth/login', () => {
   })
 })
 
-describe('GET /auth/callback', () => {
+describe('GET /api/auth/callback', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let fetchSpy: any
   beforeEach(() => _resetBootstrapForTests())
@@ -56,7 +56,7 @@ describe('GET /auth/callback', () => {
 
   it('rejects when state cookie is missing', async () => {
     const res = await worker.fetch(
-      new Request('http://x/auth/callback?code=abc&state=xyz'),
+      new Request('http://x/api/auth/callback?code=abc&state=xyz'),
       makeEnv(),
       {} as ExecutionContext,
     )
@@ -66,7 +66,7 @@ describe('GET /auth/callback', () => {
 
   it('rejects when state does not match cookie', async () => {
     const res = await worker.fetch(
-      new Request('http://x/auth/callback?code=abc&state=xyz', {
+      new Request('http://x/api/auth/callback?code=abc&state=xyz', {
         headers: { cookie: 'gotrends_oauth_state=different' },
       }),
       makeEnv(),
@@ -91,7 +91,7 @@ describe('GET /auth/callback', () => {
     })
 
     const res = await worker.fetch(
-      new Request('http://x/auth/callback?code=abc&state=match', {
+      new Request('http://x/api/auth/callback?code=abc&state=match', {
         headers: { cookie: 'gotrends_oauth_state=match' },
       }),
       makeEnv(),
@@ -120,7 +120,7 @@ describe('GET /auth/callback', () => {
     })
 
     const res = await worker.fetch(
-      new Request('http://x/auth/callback?code=abc&state=match', {
+      new Request('http://x/api/auth/callback?code=abc&state=match', {
         headers: { cookie: 'gotrends_oauth_state=match' },
       }),
       makeEnv(),
@@ -142,7 +142,7 @@ describe('GET /auth/callback', () => {
     })
 
     const res = await worker.fetch(
-      new Request('http://x/auth/callback?code=abc&state=match', {
+      new Request('http://x/api/auth/callback?code=abc&state=match', {
         headers: { cookie: 'gotrends_oauth_state=match' },
       }),
       makeEnv(),
@@ -152,12 +152,12 @@ describe('GET /auth/callback', () => {
   })
 })
 
-describe('POST /auth/logout', () => {
+describe('POST /api/auth/logout', () => {
   beforeEach(() => _resetBootstrapForTests())
 
   it('clears the session cookie', async () => {
     const res = await worker.fetch(
-      new Request('http://x/auth/logout', { method: 'POST' }),
+      new Request('http://x/api/auth/logout', { method: 'POST' }),
       makeEnv(),
       {} as ExecutionContext,
     )
@@ -167,12 +167,12 @@ describe('POST /auth/logout', () => {
   })
 })
 
-describe('GET /auth/me', () => {
+describe('GET /api/auth/me', () => {
   beforeEach(() => _resetBootstrapForTests())
 
   it('returns authenticated:false when no cookie is present', async () => {
     const res = await worker.fetch(
-      new Request('http://x/auth/me'),
+      new Request('http://x/api/auth/me'),
       makeEnv(),
       {} as ExecutionContext,
     )
@@ -183,7 +183,7 @@ describe('GET /auth/me', () => {
   it('returns authenticated:true with a valid cookie', async () => {
     const cookie = await makeSessionCookie('pedro@gobeaute.com.br')
     const res = await worker.fetch(
-      new Request('http://x/auth/me', { headers: { cookie } }),
+      new Request('http://x/api/auth/me', { headers: { cookie } }),
       makeEnv(),
       {} as ExecutionContext,
     )
@@ -195,7 +195,7 @@ describe('GET /auth/me', () => {
 
   it('returns authenticated:false when SESSION_SECRET is unset (server not configured yet)', async () => {
     const env = makeEnv({ SESSION_SECRET: undefined })
-    const res = await worker.fetch(new Request('http://x/auth/me'), env, {} as ExecutionContext)
+    const res = await worker.fetch(new Request('http://x/api/auth/me'), env, {} as ExecutionContext)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ authenticated: false })
   })

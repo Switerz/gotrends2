@@ -1,11 +1,13 @@
 // src/http/routes/auth.ts
 //
-// Browser-facing OAuth endpoints:
-//   GET  /auth/login     → 302 to Google consent (sets CSRF state cookie)
-//   GET  /auth/callback  → exchanges code for identity, sets session cookie,
-//                          redirects back to "/"
-//   POST /auth/logout    → clears the session cookie
-//   GET  /auth/me        → cheap "am I logged in?" check used by the SPA
+// Browser-facing OAuth endpoints (mounted at /api/auth in src/http/index.ts —
+// the /api/ prefix is required because the Godeploy asset handler swallows
+// bare /auth/* paths and serves the SPA shell instead of the worker):
+//   GET  /api/auth/login     → 302 to Google consent (sets CSRF state cookie)
+//   GET  /api/auth/callback  → exchanges code for identity, sets session
+//                              cookie, redirects back to "/"
+//   POST /api/auth/logout    → clears the session cookie
+//   GET  /api/auth/me        → cheap "am I logged in?" check used by the SPA
 //
 // Identity is gated by `ALLOWED_EMAIL_DOMAIN` (default `gobeaute.com.br`) so
 // even a successful Google login outside the domain is rejected with 403.
