@@ -125,36 +125,43 @@ async function handleDecision(
 
   await recsRepo.setStatus(id, decision)
 
-  // Auto-trigger the executor on approval. Best-effort, mirrors /chat/webhook:
-  // a failure here leaves the rec in 'approved' state for manual retry rather
-  // than rolling back the decision.
+  // Auto-trigger the executor on approval — FIRE-AND-FORGET via waitUntil so the
+  // SPA gets an immediate response. The execution runs in the same isolate
+  // after the response is sent. A failure here leaves the rec in 'approved'
+  // state for manual retry rather than rolling back the decision.
   if (decision === 'approved') {
     const executeToken = c.env.EXECUTE_TOKEN
     if (executeToken) {
-      try {
-        const origin = new URL(c.req.url).origin
-        const execRes = await fetch(`${origin}/api/execute/${id}`, {
-          method: 'POST',
-          headers: { 'x-execute-token': executeToken },
+      const origin = new URL(c.req.url).origin
+      const execUrl = `${origin}/api/execute/${id}`
+      const executePromise = fetch(execUrl, {
+        method: 'POST',
+        headers: { 'x-execute-token': executeToken },
+      })
+        .then(async (execRes) => {
+          if (!execRes.ok) {
+            console.log(
+              JSON.stringify({
+                event: 'execute_failed_after_approval',
+                recommendationId: id,
+                status: execRes.status,
+              }),
+            )
+          }
         })
-        if (!execRes.ok) {
+        .catch((e: unknown) => {
           console.log(
             JSON.stringify({
-              event: 'execute_failed_after_approval',
+              event: 'execute_exception_after_approval',
               recommendationId: id,
-              status: execRes.status,
+              error: (e as Error).message,
             }),
           )
-        }
-      } catch (e) {
-        console.log(
-          JSON.stringify({
-            event: 'execute_exception_after_approval',
-            recommendationId: id,
-            error: (e as Error).message,
-          }),
-        )
-      }
+        })
+      // executionCtx.waitUntil extends the worker lifetime to finish the
+      // execute call AFTER the response is sent. The SPA sees a fast 200
+      // immediately, and the mutate happens in the background.
+      c.executionCtx.waitUntil(executePromise)
     } else {
       console.log(
         JSON.stringify({

@@ -37,39 +37,15 @@ chatWebhookRouter.post('/webhook', async (c) => {
   try {
     payload = await c.req.json()
   } catch {
-    console.log(JSON.stringify({ event: 'chat_webhook_invalid_json' }))
     return c.json({ error: 'invalid_json' }, 400)
-  }
-
-  // Debug log the inbound payload shape (truncated for safety)
-  try {
-    const stringified = JSON.stringify(payload)
-    console.log(JSON.stringify({
-      event: 'chat_webhook_payload',
-      payloadPreview: stringified.slice(0, 1500),
-      payloadLength: stringified.length,
-    }))
-  } catch {
-    /* ignore */
   }
 
   let event
   try {
     event = parseInteractionEvent(payload)
   } catch (e) {
-    console.log(JSON.stringify({
-      event: 'chat_webhook_parse_failed',
-      error: (e as Error).message,
-      payloadKeys: payload && typeof payload === 'object' ? Object.keys(payload as object) : null,
-    }))
     return c.json({ error: 'invalid_event', detail: (e as Error).message }, 400)
   }
-  console.log(JSON.stringify({
-    event: 'chat_webhook_parsed',
-    recommendationId: event.recommendationId,
-    action: event.action,
-    userEmail: event.user.email,
-  }))
 
   const recsRepo = new RecommendationsRepo(c.env.DB)
   const apvRepo = new ApprovalsRepo(c.env.DB)

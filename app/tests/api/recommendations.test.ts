@@ -317,17 +317,32 @@ async function postDecision(
   id: string,
   action: 'approve' | 'reject',
   withCookie = true,
-): Promise<Response> {
+): Promise<{ res: Response; waitForBackground: () => Promise<void> }> {
   const headers: Record<string, string> = { accept: 'application/json' }
   if (withCookie) headers.cookie = await makeSessionCookie()
-  return worker.fetch(
+  // Capture waitUntil promises so tests can await background work (the
+  // approve handler now fires /api/execute via executionCtx.waitUntil).
+  const bg: Promise<unknown>[] = []
+  const ctx = {
+    waitUntil: (p: Promise<unknown>) => {
+      bg.push(p)
+    },
+    passThroughOnException: () => {},
+  } as unknown as ExecutionContext
+  const res = await worker.fetch(
     new Request(`http://x/api/recommendations/${id}/${action}`, {
       method: 'POST',
       headers,
     }),
     env,
-    {} as ExecutionContext,
+    ctx,
   )
+  return {
+    res,
+    waitForBackground: async () => {
+      await Promise.all(bg.map((p) => p.catch(() => undefined)))
+    },
+  }
 }
 
 describe('POST /api/recommendations/:id/(approve|reject)', () => {
@@ -337,7 +352,7 @@ describe('POST /api/recommendations/:id/(approve|reject)', () => {
   it('returns 401 without a session cookie', async () => {
     const { env, db } = makeBootstrapTolerantEnv()
     await seedRec(db)
-    const res = await postDecision(env, 'rec-decision-1', 'approve', false)
+    const { res } = await postDecision(env, 'rec-decision-1', 'approve', false)
     expect(res.status).toBe(401)
   })
 
@@ -356,10 +371,14 @@ describe('POST /api/recommendations/:id/(approve|reject)', () => {
       return realFetch(input, init)
     })
 
-    const res = await postDecision(env, 'rec-approve', 'approve')
+    const { res, waitForBackground } = await postDecision(env, 'rec-approve', 'approve')
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean; decision: string; recommendationId: string }
     expect(body).toEqual({ ok: true, decision: 'approved', recommendationId: 'rec-approve' })
+
+    // The /api/execute call is fire-and-forget via executionCtx.waitUntil; await it
+    // before asserting executeCalls to avoid a race with the assertion.
+    await waitForBackground()
 
     const rec = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-approve')
     expect(rec?.['status']).toBe('approved')
@@ -403,7 +422,7 @@ describe('POST /api/recommendations/:id/(approve|reject)', () => {
       return realFetch(input, init)
     })
 
-    const res = await postDecision(env, 'rec-reject', 'reject')
+    const { res } = await postDecision(env, 'rec-reject', 'reject')
     expect(res.status).toBe(200)
     const body = (await res.json()) as { decision: string }
     expect(body.decision).toBe('rejected')
@@ -418,7 +437,7 @@ describe('POST /api/recommendations/:id/(approve|reject)', () => {
 
   it('returns 404 when the recommendation is unknown', async () => {
     const { env } = makeBootstrapTolerantEnv()
-    const res = await postDecision(env, 'rec-missing', 'approve')
+    const { res } = await postDecision(env, 'rec-missing', 'approve')
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'not_found' })
   })
@@ -426,7 +445,7 @@ describe('POST /api/recommendations/:id/(approve|reject)', () => {
   it('returns 409 when the recommendation is no longer pending', async () => {
     const { env, db } = makeBootstrapTolerantEnv()
     await seedRec(db, { recommendation_id: 'rec-terminal', status: 'executed' })
-    const res = await postDecision(env, 'rec-terminal', 'approve')
+    const { res } = await postDecision(env, 'rec-terminal', 'approve')
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: string; currentStatus: string }
     expect(body.error).toBe('not_pending')
@@ -446,8 +465,12 @@ describe('POST /api/recommendations/:id/(approve|reject)', () => {
       return realFetch(input, init)
     })
 
-    const res = await postDecision(env, 'rec-exec-fail', 'approve')
+    const { res, waitForBackground } = await postDecision(env, 'rec-exec-fail', 'approve')
     expect(res.status).toBe(200)
+    // Approval is committed before the executor is even invoked; status flips to
+    // 'approved' regardless of the background fetch outcome. Still drain the
+    // background promise so the catch handler runs cleanly.
+    await waitForBackground()
     const rec = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-exec-fail')
     expect(rec?.['status']).toBe('approved')
   })
