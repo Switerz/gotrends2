@@ -38,6 +38,8 @@ export interface Env {
    */
   DRY_RUN_EXECUTE?: string
   ALLOW_UNAUTHENTICATED_CHAT?: string
+  /** Temporary debug: when '1', /chat/webhook skips JWT verification. NEVER use long-term. */
+  CHAT_JWT_BYPASS?: string
   // In-worker auth (Google OAuth + Chat JWT). Set by the controller via
   // setAppSecret once Cloud Console setup is complete. When SESSION_SECRET is
   // unset, `requireSession` fails closed with 500 — the app cannot be flipped

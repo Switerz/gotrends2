@@ -101,8 +101,31 @@ export const requireSession: MiddlewareHandler<{
  * issuer/audience, expired, signature mismatch) yields 401.
  */
 export const requireChatJwt: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  console.log(JSON.stringify({
+    event: 'chat_webhook_entry',
+    method: c.req.method,
+    path: c.req.path,
+    headers: Object.fromEntries([...c.req.raw.headers.entries()].map(([k, v]) => [
+      k,
+      k.toLowerCase() === 'authorization' ? `${v.slice(0, 16)}…(${v.length}ch)` : v.slice(0, 200),
+    ])),
+  }))
+
+  // Temporary bypass for debugging — set CHAT_JWT_BYPASS=1 to skip JWT verification
+  if (c.env.CHAT_JWT_BYPASS === '1') {
+    console.log(JSON.stringify({ event: 'chat_webhook_jwt_bypassed' }))
+    await next()
+    return
+  }
+
   const auth = c.req.header('authorization')
   if (!auth || !/^Bearer\s+/i.test(auth)) {
+    console.log(JSON.stringify({
+      event: 'chat_webhook_reject',
+      reason: 'missing_bearer',
+      hasAuthHeader: !!auth,
+      authPrefix: auth?.slice(0, 12) ?? null,
+    }))
     return c.json({ error: 'unauthorized', detail: 'missing bearer' }, 401)
   }
   const jwt = auth.replace(/^Bearer\s+/i, '')
@@ -110,6 +133,32 @@ export const requireChatJwt: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   try {
     await verifyChatJwt(jwt, audience, Date.now())
   } catch (e) {
+    // Decode payload (no verification) to log iss/aud/exp for debug
+    let payloadDebug: Record<string, unknown> = {}
+    try {
+      const parts = jwt.split('.')
+      if (parts.length === 3 && parts[1]) {
+        const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+        const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+        const decoded = JSON.parse(atob(padded)) as Record<string, unknown>
+        payloadDebug = {
+          iss: decoded.iss,
+          aud: decoded.aud,
+          exp: decoded.exp,
+          azp: decoded.azp,
+          email: decoded.email,
+        }
+      }
+    } catch {
+      payloadDebug = { decode_error: true }
+    }
+    console.log(JSON.stringify({
+      event: 'chat_webhook_reject',
+      reason: 'jwt_verify_failed',
+      error: (e as Error).message,
+      expectedAudience: audience,
+      payload: payloadDebug,
+    }))
     return c.json({ error: 'unauthorized', detail: (e as Error).message }, 401)
   }
   await next()
