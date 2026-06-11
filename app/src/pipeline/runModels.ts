@@ -204,18 +204,64 @@ interface SettingsRow {
   budget_resource_name: string | null
 }
 
-/** Build the Metabase SQL for the daily-grain pull. The legacy query is
- *  parameterised on company + date range; production swaps this for the canonical
- *  `queries/01_campaign_daily_metrics.sql`. */
-function buildDailySql(company: string, start: string, end: string): string {
+/** Build the Metabase SQL for the daily-grain pull.
+ *  Canonical query mirroring legacy/python/queries/01_campaign_daily_metrics.sql.
+ *  Aggregates raw.gogroup_google_ads (ad-grain) to campaign-grain via GROUP BY,
+ *  then LEFT JOINs raw.gogroup_google_ads_campaigns for auction signals. */
+export function buildDailySql(company: string, start: string, end: string): string {
   const safeCompany = company.replace(/'/g, "''")
   return `
-    SELECT date, company, campaign_id, campaign_name, campaign_type,
-           cost, revenue AS conversion_value, impressions, clicks, conversions,
-           impression_share, lost_is_budget, lost_is_rank
-    FROM raw.gogroup_google_ads
-    WHERE company = '${safeCompany}' AND date BETWEEN '${start}' AND '${end}'
-    ORDER BY campaign_id, date
+    WITH ad_daily AS (
+      SELECT
+        date,
+        company,
+        campaign_id,
+        MAX(campaign_name) AS campaign_name,
+        MAX(channel_type) AS campaign_type,
+        SUM(cost)::numeric AS cost,
+        SUM(impressions)::bigint AS impressions,
+        SUM(clicks)::bigint AS clicks,
+        SUM(conversions)::numeric AS conversions,
+        SUM(revenue)::numeric AS conversion_value
+      FROM raw.gogroup_google_ads
+      WHERE company = '${safeCompany}' AND date BETWEEN '${start}' AND '${end}'
+      GROUP BY date, company, campaign_id
+    ),
+    campaign_attrs AS (
+      SELECT
+        date,
+        company,
+        campaign_id,
+        campaign_name,
+        channel_type AS campaign_type,
+        campaign_status AS status,
+        bidding_strategy_type AS bidding_strategy,
+        search_impression_share::numeric AS impression_share,
+        search_budget_lost_impression_share::numeric AS lost_is_budget,
+        search_rank_lost_impression_share::numeric AS lost_is_rank
+      FROM raw.gogroup_google_ads_campaigns
+      WHERE company = '${safeCompany}' AND date BETWEEN '${start}' AND '${end}'
+    )
+    SELECT
+      ad_daily.date::text AS date,
+      ad_daily.company,
+      ad_daily.campaign_id::text AS campaign_id,
+      COALESCE(campaign_attrs.campaign_name, ad_daily.campaign_name) AS campaign_name,
+      COALESCE(campaign_attrs.campaign_type, ad_daily.campaign_type) AS campaign_type,
+      ad_daily.cost::float8 AS cost,
+      ad_daily.conversion_value::float8 AS conversion_value,
+      ad_daily.impressions::int AS impressions,
+      ad_daily.clicks::int AS clicks,
+      ad_daily.conversions::float8 AS conversions,
+      campaign_attrs.impression_share::float8 AS impression_share,
+      campaign_attrs.lost_is_budget::float8 AS lost_is_budget,
+      campaign_attrs.lost_is_rank::float8 AS lost_is_rank
+    FROM ad_daily
+    LEFT JOIN campaign_attrs
+      ON campaign_attrs.date = ad_daily.date
+     AND campaign_attrs.company = ad_daily.company
+     AND campaign_attrs.campaign_id = ad_daily.campaign_id
+    ORDER BY ad_daily.campaign_id, ad_daily.date
   `
 }
 

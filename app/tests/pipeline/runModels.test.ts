@@ -10,7 +10,7 @@ import { readCsv, coerceNumeric } from '@/lib/csv'
 import { MetabaseClient } from '@/clients/metabase'
 import { GoogleAdsClient } from '@/clients/googleAds'
 import { isUuid } from '@/lib/uuid'
-import { runModelsForAccount } from '@/pipeline/runModels'
+import { runModelsForAccount, buildDailySql } from '@/pipeline/runModels'
 import { makeFakeDb } from '../db/repos/_fakeDb'
 
 const FIX = resolve(__dirname, '../fixtures/parity')
@@ -249,6 +249,31 @@ describe('runModelsForAccount', () => {
     })
     const result = await runModelsForAccount(db, metabase, googleAds, baseOpts, NOW_ISO)
     expect(isUuid(result.runId)).toBe(true)
+  })
+
+  it('buildDailySql aggregates ad-grain to campaign-grain via GROUP BY and LEFT JOINs campaigns table', () => {
+    const sql = buildDailySql('Apice', '2026-04-11', '2026-06-10')
+    // The canonical CTE aggregates the ad-grain raw table.
+    expect(sql).toContain('FROM raw.gogroup_google_ads')
+    expect(sql).toContain('GROUP BY date, company, campaign_id')
+    // It LEFT JOINs the campaigns table for auction signals.
+    expect(sql).toContain('raw.gogroup_google_ads_campaigns')
+    expect(sql).toContain('LEFT JOIN campaign_attrs')
+    // It does NOT reference the non-existent columns on the ad-grain table.
+    expect(sql).not.toMatch(/FROM\s+raw\.gogroup_google_ads\s+WHERE[^)]*campaign_type/)
+    // Casts so JSON values round-trip cleanly through Metabase.
+    expect(sql).toContain('::text AS date')
+    expect(sql).toContain('::text AS campaign_id')
+    expect(sql).toContain('::float8 AS cost')
+    // Company is interpolated with single-quote escaping.
+    expect(sql).toContain("company = 'Apice'")
+    expect(sql).toContain("'2026-04-11'")
+    expect(sql).toContain("'2026-06-10'")
+  })
+
+  it('buildDailySql escapes single quotes in company name', () => {
+    const sql = buildDailySql("O'Brien", '2026-01-01', '2026-01-31')
+    expect(sql).toContain("company = 'O''Brien'")
   })
 
   it('windowStart/End derived from nowIso and windowDays', async () => {
