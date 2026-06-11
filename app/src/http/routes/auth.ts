@@ -17,8 +17,9 @@
 // the SPA shell. The SPA does the navigation itself: fetch JSON, then
 // window.location to Google.
 //
-// Identity is gated by `ALLOWED_EMAIL_DOMAIN` (default `gobeaute.com.br`) so
-// even a successful Google login outside the domain is rejected with 403.
+// Identity is gated by `ALLOWED_EMAIL_DOMAIN` (comma-separated list, default
+// `gobeaute.com.br`) so even a successful Google login outside any of those
+// domains is rejected with 403. Example: `gobeaute.com.br,gocase.com`.
 
 import { Hono } from 'hono'
 import type { Env } from '@/index'
@@ -73,12 +74,20 @@ authRouter.get('/callback', async (c) => {
     return c.json({ error: 'oauth_exchange_failed', detail: (e as Error).message }, 502)
   }
 
-  const allowedDomain = c.env.ALLOWED_EMAIL_DOMAIN ?? 'gobeaute.com.br'
-  if (!user.email.endsWith(`@${allowedDomain}`)) {
+  const allowedDomains = (c.env.ALLOWED_EMAIL_DOMAIN ?? 'gobeaute.com.br')
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter((d) => d.length > 0)
+  const userEmailLower = user.email.toLowerCase()
+  const ok = allowedDomains.some((d) => userEmailLower.endsWith(`@${d}`))
+  if (!ok) {
     // Clear the state cookie even on rejection so the next attempt starts clean.
     c.header('Set-Cookie', clearStateCookie())
     return c.json(
-      { error: 'forbidden', detail: `email ${user.email} not in @${allowedDomain}` },
+      {
+        error: 'forbidden',
+        detail: `email ${user.email} not in [${allowedDomains.map((d) => `@${d}`).join(', ')}]`,
+      },
       403,
     )
   }

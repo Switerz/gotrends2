@@ -195,6 +195,33 @@ describe('GET /api/auth/callback', () => {
     expect(body.detail).toMatch(/gobeaute\.com\.br/)
   })
 
+  it('accepts emails from any domain in the comma-separated allowlist', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url
+      if (url.startsWith('https://oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok-1' }), { status: 200 })
+      }
+      if (url.startsWith('https://www.googleapis.com/oauth2/v3/userinfo')) {
+        return new Response(JSON.stringify({ email: 'ana@gocase.com', name: 'Ana' }), {
+          status: 200,
+        })
+      }
+      throw new Error(`unexpected: ${url}`)
+    })
+    const env = makeEnv()
+    env.ALLOWED_EMAIL_DOMAIN = 'gobeaute.com.br,gocase.com'
+    const res = await worker.fetch(
+      new Request('http://x/api/auth/callback?code=abc&state=match', {
+        headers: { cookie: 'gotrends_oauth_state=match', accept: 'application/json' },
+      }),
+      env,
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; email: string }
+    expect(body.email).toBe('ana@gocase.com')
+  })
+
   it('returns 502 when Google token exchange fails', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : (input as Request).url
