@@ -31,6 +31,7 @@ import {
   type BacktestRow,
 } from '@/models/backtesting'
 import { requireSession } from '@/http/middleware'
+import { mapRows } from '@/db/rowMapper'
 
 export const backtestRouter = new Hono<{ Bindings: Env }>()
 backtestRouter.use('*', requireSession)
@@ -88,9 +89,9 @@ backtestRouter.get('/', async (c) => {
   const params = accountId ? [accountId, limit] : [limit]
   const { columns, rows } = await c.env.DB.query(sql, params)
 
-  const rawRows: RawJoinRow[] = rows.map(
-    (r) => Object.fromEntries(columns.map((col, i) => [col, r[i]])) as unknown as RawJoinRow,
-  )
+  // mapRows handles both array-form (local dev) and object-form (live Worker)
+  // row shapes — see src/db/rowMapper.ts.
+  const rawRows: RawJoinRow[] = mapRows<RawJoinRow>(columns, rows)
 
   const backtestRows: BacktestRow[] = rawRows.map((r) => {
     const outcome = classifyOutcome(

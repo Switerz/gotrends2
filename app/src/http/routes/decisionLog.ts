@@ -11,6 +11,7 @@
 import { Hono } from 'hono'
 import type { Env } from '@/index'
 import { requireSession } from '@/http/middleware'
+import { mapRows } from '@/db/rowMapper'
 
 export const decisionLogRouter = new Hono<{ Bindings: Env }>()
 decisionLogRouter.use('*', requireSession)
@@ -27,8 +28,14 @@ decisionLogRouter.get('/', async (c) => {
   const params = accountId ? [accountId, limit] : [limit]
 
   const { columns, rows } = await c.env.DB.query(sql, params)
-  const out = rows.map((r) =>
-    Object.fromEntries(columns.map((col, i) => [col, r[i] ?? null])),
-  )
+  // mapRows handles both array-form (local dev) and object-form (live Worker)
+  // row shapes. We coalesce undefined -> null after mapping so the client
+  // contract (every column key present, missing values explicit) is stable.
+  const mapped = mapRows<Record<string, unknown>>(columns, rows)
+  const out = mapped.map((r) => {
+    const o: Record<string, unknown> = {}
+    for (const c of columns) o[c] = r[c] ?? null
+    return o
+  })
   return c.json(out)
 })

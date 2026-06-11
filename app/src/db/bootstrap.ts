@@ -17,7 +17,7 @@ export interface GodeployDB {
   query(
     sql: string,
     params?: unknown[],
-  ): Promise<{ columns: string[]; rows: unknown[][]; rowsRead: number }>
+  ): Promise<{ columns: string[]; rows: unknown[]; rowsRead: number }>
 }
 
 /** Run every DDL statement in `SCHEMA_STATEMENTS` in order. Safe to call repeatedly. */

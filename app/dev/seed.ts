@@ -112,7 +112,12 @@ export interface SeedResult {
 export async function seedDevData(db: GodeployDB): Promise<SeedResult> {
   // Idempotency: bail out if there's already data.
   const existing = await db.query(`SELECT COUNT(*) AS n FROM recommendations`)
-  const existingCount = (existing.rows[0]?.[0] as number | undefined) ?? 0
+  const rowZero = existing.rows[0]
+  const existingCount: number = Array.isArray(rowZero)
+    ? (Number((rowZero as unknown[])[0]) || 0)
+    : rowZero && typeof rowZero === 'object'
+      ? (Number((rowZero as Record<string, unknown>)['n']) || 0)
+      : 0
   if (existingCount > 0) {
     return { runs: 0, recommendations: 0, executions: 0, outcomes: 0 }
   }
