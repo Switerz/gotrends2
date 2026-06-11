@@ -19,12 +19,14 @@ import type { Env } from '@/index'
 import { requireCronKey } from '../middleware'
 import { AccountsRepo } from '@/db/repos/accounts'
 import { RecommendationsRepo } from '@/db/repos/recommendations'
+import { OutcomesRepo } from '@/db/repos/outcomes'
 import { ChatRepo } from '@/db/repos/chat'
 import { MetabaseClient } from '@/clients/metabase'
 import { GoogleAdsClient } from '@/clients/googleAds'
 import { GoogleChatClient, buildRecommendationCard } from '@/clients/googleChat'
 import { runModelsForAccount } from '@/pipeline/runModels'
 import { uuid } from '@/lib/uuid'
+import { mapRows } from '@/db/rowMapper'
 
 export const cronRouter = new Hono<{ Bindings: Env }>()
 cronRouter.use('*', requireCronKey)
@@ -199,29 +201,208 @@ cronRouter.post('/send-to-chat', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
-// POST /cron/outcomes/24h    (daily 07:00 UTC)  [STUB — Phase 8.2]
-// POST /cron/outcomes/72h    (daily 08:00 UTC)  [STUB — Phase 8.2]
+// POST /cron/outcomes/24h    (daily 07:00 UTC)
+// POST /cron/outcomes/72h    (daily 08:00 UTC)
 // ---------------------------------------------------------------------------
 //
-// Outcome computation requires porting `legacy/python/queries/12_decision_backtest.sql`
-// (per-campaign actuals from Metabase aligned to the rec's expected_*). Until
-// that lands the route is wired up so the platform cron entry exists and we
-// can see the schedule fire end-to-end — it just returns 0 counters.
-function stubOutcomes(env: Env, hours: 24 | 72): {
-  computed: number
-  skipped: number
-  errors: string[]
-} {
+// For each successful execution whose `completed_at` falls in the 6-hour grace
+// band ending `hours` ago, pull the realised cost/revenue/conversions from
+// Metabase (`raw.gogroup_google_ads`, daily grain), compute deltas vs the
+// recommendation's expected_*, and write a row to `execution_outcomes`.
+//
+// Actuals are approximated to day-grain because `raw.gogroup_google_ads` is
+// daily; precise hourly windows would require an hourly mart that does not
+// yet exist consistently. We sum [day-of-execution .. day + ceil(hours/24)].
+//
+// Schema mapping (the DDL uses observed_* columns, not the plan's *_actual):
+//   - cost_actual_brl   -> observed_cost_brl
+//   - revenue_actual_brl-> observed_revenue_brl
+//   - roas_actual       -> observed_roas
+//   - cost delta        -> expected_vs_actual_cost_delta   (pct vs expected)
+//   - revenue delta     -> expected_vs_actual_revenue_delta(pct vs expected)
+//   - verdict           -> packed into `notes` as JSON
+
+interface CandidateExecRow {
+  execution_id: string
+  recommendation_id: string
+  account_id: string
+  completed_at: string
+}
+
+function dateOnly(iso: string): string {
+  return iso.slice(0, 10)
+}
+
+function addDaysIso(iso: string, n: number): string {
+  const ms = Date.parse(iso) + n * 24 * 60 * 60 * 1000
+  return new Date(ms).toISOString().slice(0, 10)
+}
+
+/**
+ * Fetch cost/revenue/conversions actuals from the daily Data Mart, summed
+ * across the inclusive date range [dateStart..dateEnd].
+ */
+async function fetchActualsForCampaign(
+  metabase: MetabaseClient,
+  company: string,
+  campaignId: string,
+  dateStart: string,
+  dateEnd: string,
+): Promise<{ cost: number; revenue: number; conversions: number }> {
+  const escapedCompany = company.replace(/'/g, "''")
+  // campaign_id is numeric in the Data Mart but stored as TEXT in our DB.
+  const campaignIdNum = Number(campaignId)
+  if (!Number.isFinite(campaignIdNum)) {
+    return { cost: 0, revenue: 0, conversions: 0 }
+  }
+  const sql = `
+    SELECT COALESCE(SUM(cost), 0)        AS cost,
+           COALESCE(SUM(revenue), 0)     AS revenue,
+           COALESCE(SUM(conversions), 0) AS conversions
+    FROM raw.gogroup_google_ads
+    WHERE company = '${escapedCompany}'
+      AND campaign_id = ${campaignIdNum}
+      AND date BETWEEN '${dateStart}' AND '${dateEnd}'
+  `
+  const rows = await metabase.querySql<{
+    cost: number | string
+    revenue: number | string
+    conversions: number | string
+  }>(sql)
+  if (rows.length === 0) return { cost: 0, revenue: 0, conversions: 0 }
+  const r = rows[0]!
+  return {
+    cost: Number(r.cost) || 0,
+    revenue: Number(r.revenue) || 0,
+    conversions: Number(r.conversions) || 0,
+  }
+}
+
+async function computeOutcomesWindow(
+  env: Env,
+  hours: 24 | 72,
+  nowMs: number = Date.now(),
+): Promise<{ computed: number; skipped: number; errors: string[] }> {
   const { metabase } = buildClients(env)
   if (!metabase) {
     return { computed: 0, skipped: 0, errors: ['metabase_unavailable'] }
   }
-  return {
-    computed: 0,
-    skipped: 0,
-    errors: [`stub_not_yet_implemented_window=${hours}h`],
+
+  const outcomesRepo = new OutcomesRepo(env.DB)
+  const recsRepo = new RecommendationsRepo(env.DB)
+  const accountsRepo = new AccountsRepo(env.DB)
+
+  // Window of executions to consider: completed between [now - hours - 6h, now - hours).
+  const upperMs = nowMs - hours * 60 * 60 * 1000
+  const lowerMs = upperMs - 6 * 60 * 60 * 1000
+  const upperIso = new Date(upperMs).toISOString()
+  const lowerIso = new Date(lowerMs).toISOString()
+
+  const result = await env.DB.query(
+    `SELECT execution_id, recommendation_id, account_id, completed_at
+       FROM executions
+      WHERE status = ? AND completed_at >= ? AND completed_at < ?`,
+    ['success', lowerIso, upperIso],
+  )
+  const candidates = mapRows<CandidateExecRow>(result.columns, result.rows)
+
+  const windowLabel: '24h' | '72h' = hours === 24 ? '24h' : '72h'
+  let computed = 0
+  let skipped = 0
+  const errors: string[] = []
+
+  for (const exec of candidates) {
+    // Idempotency: skip if we already wrote an outcome for this rec+window.
+    const existing = await outcomesRepo.listByRecommendation(
+      exec.recommendation_id,
+    )
+    if (existing.some((o) => o.window === windowLabel)) {
+      skipped++
+      continue
+    }
+
+    try {
+      const rec = await recsRepo.getById(exec.recommendation_id)
+      if (!rec) {
+        skipped++
+        continue
+      }
+
+      // Resolve the company string for the Data Mart query.
+      const acc = await accountsRepo.get(rec.account_id)
+      const company = acc?.company ?? 'Apice'
+
+      // Daily-grain window: [day-of-completion .. day + ceil(hours/24)].
+      const startDate = dateOnly(exec.completed_at)
+      const endDate = addDaysIso(exec.completed_at, Math.ceil(hours / 24))
+
+      const actuals = await fetchActualsForCampaign(
+        metabase,
+        company,
+        rec.campaign_id,
+        startDate,
+        endDate,
+      )
+      const roasActual = actuals.cost > 0 ? actuals.revenue / actuals.cost : null
+
+      const expRev = rec.expected_incremental_revenue_brl
+      const expCost = rec.expected_incremental_cost_brl
+      const revVsExp =
+        expRev !== null && expRev !== 0
+          ? (actuals.revenue - expRev) / Math.abs(expRev)
+          : null
+      const costVsExp =
+        expCost !== null && expCost !== 0
+          ? (actuals.cost - expCost) / Math.abs(expCost)
+          : null
+
+      let verdict: 'inconclusive' | 'as_expected' | 'better_than_expected' | 'worse'
+      if (expRev === null || revVsExp === null) {
+        verdict = 'inconclusive'
+      } else if (Math.abs(revVsExp) <= 0.1) {
+        verdict = 'as_expected'
+      } else if (revVsExp > 0.1) {
+        verdict = 'better_than_expected'
+      } else {
+        verdict = 'worse'
+      }
+
+      const notes = JSON.stringify({
+        verdict,
+        window_start_date: startDate,
+        window_end_date: endDate,
+        company,
+        source: 'raw.gogroup_google_ads',
+        grain: 'daily',
+        note: 'actuals approximated to day-grain; precise hourly granularity not available',
+      })
+
+      await outcomesRepo.insert({
+        outcome_id: uuid(),
+        execution_id: exec.execution_id,
+        recommendation_id: exec.recommendation_id,
+        account_id: rec.account_id,
+        window: windowLabel,
+        observed_cost_brl: actuals.cost,
+        observed_revenue_brl: actuals.revenue,
+        observed_roas: roasActual,
+        observed_conversions: actuals.conversions,
+        expected_vs_actual_cost_delta: costVsExp,
+        expected_vs_actual_revenue_delta: revVsExp,
+        notes,
+      })
+      computed++
+    } catch (e) {
+      errors.push(`exec=${exec.execution_id}: ${(e as Error).message}`)
+    }
   }
+
+  return { computed, skipped, errors }
 }
 
-cronRouter.post('/outcomes/24h', (c) => c.json(stubOutcomes(c.env, 24)))
-cronRouter.post('/outcomes/72h', (c) => c.json(stubOutcomes(c.env, 72)))
+cronRouter.post('/outcomes/24h', async (c) =>
+  c.json(await computeOutcomesWindow(c.env, 24)),
+)
+cronRouter.post('/outcomes/72h', async (c) =>
+  c.json(await computeOutcomesWindow(c.env, 72)),
+)

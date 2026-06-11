@@ -120,7 +120,7 @@ describe('GoogleAdsClient', () => {
     const client = new GoogleAdsClient(cfg, fetcher as unknown as typeof fetch)
     await client.searchStream('9876543210', 'SELECT campaign.id FROM campaign', 1_000_000)
     expect(fetcher.mock.calls[1]![0]).toBe(
-      'https://googleads.googleapis.com/v18/customers/9876543210/googleAds:searchStream',
+      'https://googleads.googleapis.com/v20/customers/9876543210/googleAds:searchStream',
     )
   })
 
@@ -159,7 +159,7 @@ describe('GoogleAdsClient', () => {
     )
     expect(out).toEqual({ resourceName: 'customers/123/campaignBudgets/9' })
     expect(fetcher.mock.calls[1]![0]).toBe(
-      'https://googleads.googleapis.com/v18/customers/123/campaignBudgets:mutate',
+      'https://googleads.googleapis.com/v20/customers/123/campaignBudgets:mutate',
     )
     const body = JSON.parse((fetcher.mock.calls[1]![1] as RequestInit).body as string)
     expect(body).toEqual({
@@ -192,7 +192,7 @@ describe('GoogleAdsClient', () => {
     )
     expect(out).toEqual({ resourceName: 'customers/123/campaigns/7' })
     expect(fetcher.mock.calls[1]![0]).toBe(
-      'https://googleads.googleapis.com/v18/customers/123/campaigns:mutate',
+      'https://googleads.googleapis.com/v20/customers/123/campaigns:mutate',
     )
     const body = JSON.parse((fetcher.mock.calls[1]![1] as RequestInit).body as string)
     expect(body).toEqual({

@@ -16,7 +16,7 @@
 //   7. 400 when the payload is malformed (missing rec parameter)
 //   8. 409 idempotency: a second click on the same approved rec is rejected
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import worker, { _resetBootstrapForTests, type Env } from '@/index'
 import { makeFakeDb } from '../db/repos/_fakeDb'
 import { RecommendationsRepo } from '@/db/repos/recommendations'
@@ -326,6 +326,102 @@ describe('POST /chat/webhook', () => {
     expect(second.status).toBe(409)
     // Only one approval row written.
     expect((db.tables.get('approvals') ?? []).length).toBe(1)
+  })
+
+  describe('auto-execute on approval', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let fetchSpy: any
+    afterEach(() => {
+      if (fetchSpy) fetchSpy.mockRestore()
+    })
+
+    it('fires POST /api/execute/<id> with X-Execute-Token when EXECUTE_TOKEN is set and decision=approved', async () => {
+      const { env, db } = makeBootstrapTolerantEnv({
+        ALLOW_UNAUTHENTICATED_CHAT: '1',
+        EXECUTE_TOKEN: 'exec-tok',
+      })
+      await seedRecommendationAsync(db, { recommendation_id: 'rec-auto-exec' })
+
+      fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response('{}', { status: 200 }))
+
+      const res = await worker.fetch(
+        webhookRequest(
+          buildInteractionPayload({ action: 'approve', recommendationId: 'rec-auto-exec' }),
+        ),
+        env,
+        {} as ExecutionContext,
+      )
+      expect(res.status).toBe(200)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchSpy.mock.calls[0]!
+      expect(String(url)).toMatch(/\/api\/execute\/rec-auto-exec$/)
+      expect((init as RequestInit).method).toBe('POST')
+      const headers = (init as RequestInit).headers as Record<string, string>
+      expect(headers['x-execute-token']).toBe('exec-tok')
+    })
+
+    it('does not fire /api/execute when EXECUTE_TOKEN is not set', async () => {
+      const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+      await seedRecommendationAsync(db, { recommendation_id: 'rec-no-token' })
+
+      fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+
+      const res = await worker.fetch(
+        webhookRequest(
+          buildInteractionPayload({ action: 'approve', recommendationId: 'rec-no-token' }),
+        ),
+        env,
+        {} as ExecutionContext,
+      )
+      expect(res.status).toBe(200)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('does not fire /api/execute on rejection', async () => {
+      const { env, db } = makeBootstrapTolerantEnv({
+        ALLOW_UNAUTHENTICATED_CHAT: '1',
+        EXECUTE_TOKEN: 'exec-tok',
+      })
+      await seedRecommendationAsync(db, { recommendation_id: 'rec-reject-noexec' })
+
+      fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+
+      const res = await worker.fetch(
+        webhookRequest(
+          buildInteractionPayload({ action: 'reject', recommendationId: 'rec-reject-noexec' }),
+        ),
+        env,
+        {} as ExecutionContext,
+      )
+      expect(res.status).toBe(200)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('swallows execute failures and still returns 200 to Chat', async () => {
+      const { env, db } = makeBootstrapTolerantEnv({
+        ALLOW_UNAUTHENTICATED_CHAT: '1',
+        EXECUTE_TOKEN: 'exec-tok',
+      })
+      await seedRecommendationAsync(db, { recommendation_id: 'rec-exec-fail' })
+
+      fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('network down'))
+
+      const res = await worker.fetch(
+        webhookRequest(
+          buildInteractionPayload({ action: 'approve', recommendationId: 'rec-exec-fail' }),
+        ),
+        env,
+        {} as ExecutionContext,
+      )
+      expect(res.status).toBe(200)
+      // Recommendation remains 'approved' for manual retry.
+      const recRow = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-exec-fail')
+      expect(recRow?.['status']).toBe('approved')
+    })
   })
 
   it('accepts the verification token via Authorization: Bearer header', async () => {

@@ -4,7 +4,7 @@ export interface GoogleAdsConfig {
   clientSecret: string
   refreshToken: string
   loginCustomerId: string // MCC if applicable, or the customer itself
-  apiVersion?: string // default 'v18'
+  apiVersion?: string // default 'v20'
 }
 
 type Fetcher = typeof fetch
@@ -19,7 +19,7 @@ export class GoogleAdsClient {
   ) {}
 
   private get version(): string {
-    return this.cfg.apiVersion ?? 'v18'
+    return this.cfg.apiVersion ?? 'v20'
   }
 
   /** Refresh OAuth2 access token via refresh_token grant. Caches until 60s before expiry. */

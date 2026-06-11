@@ -118,6 +118,46 @@ chatWebhookRouter.post('/webhook', async (c) => {
   const newStatus = decision === 'approved' ? 'approved' : 'rejected'
   await recsRepo.setStatus(event.recommendationId, newStatus)
 
+  // Auto-trigger the executor on approval. Best-effort: never throw out of the
+  // webhook because of an execute failure — the recommendation stays in the
+  // 'approved' state and operators can retry via POST /api/execute/:id.
+  if (decision === 'approved') {
+    const execToken = c.env.EXECUTE_TOKEN
+    if (execToken) {
+      try {
+        const origin = new URL(c.req.url).origin
+        const execRes = await fetch(`${origin}/api/execute/${event.recommendationId}`, {
+          method: 'POST',
+          headers: { 'x-execute-token': execToken },
+        })
+        if (!execRes.ok) {
+          console.log(
+            JSON.stringify({
+              event: 'execute_failed_after_approval',
+              recommendationId: event.recommendationId,
+              status: execRes.status,
+            }),
+          )
+        }
+      } catch (e) {
+        console.log(
+          JSON.stringify({
+            event: 'execute_exception_after_approval',
+            recommendationId: event.recommendationId,
+            error: (e as Error).message,
+          }),
+        )
+      }
+    } else {
+      console.log(
+        JSON.stringify({
+          event: 'execute_skipped_no_token',
+          recommendationId: event.recommendationId,
+        }),
+      )
+    }
+  }
+
   // Respond with a card-replacing message; Google Chat clients render this
   // immediately in place of the original card.
   const who =
