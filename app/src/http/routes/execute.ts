@@ -112,9 +112,30 @@ export function executeRouterFactory(
     })
     await recsRepo.setStatus(rec.recommendation_id, 'executing')
 
+    // DRY_RUN_EXECUTE='1' (string) → log + synthesize a successful mutate
+    // without calling Google Ads. Used to smoke the approval loop on first
+    // deploys without mutating real campaign budgets. Any other value or
+    // unset = real mutate.
+    const dryRun = c.env.DRY_RUN_EXECUTE === '1'
+
     try {
       let response: { resourceName: string }
-      let request: unknown
+      // Request payload kinds we persist. Both shapes carry `kind` so the
+      // dry-run branch can identify which resource to echo back in the
+      // synthetic resourceName without resorting to `any` casts.
+      type BudgetReq = {
+        kind: 'mutateBudget'
+        customerId: string
+        budgetResource: string
+        amountMicros: number
+      }
+      type RoasReq = {
+        kind: 'mutateCampaignTargetRoas'
+        customerId: string
+        campaignResource: string
+        targetRoas: number
+      }
+      let request: BudgetReq | RoasReq
 
       if (
         rec.recommended_action === 'increase_troas_or_reduce_budget' &&
@@ -128,11 +149,26 @@ export function executeRouterFactory(
           campaignResource,
           targetRoas: rec.proposed_target_roas,
         }
-        response = await adsClient.mutateCampaignTargetRoas(
-          rec.account_id,
-          campaignResource,
-          rec.proposed_target_roas,
-        )
+        if (dryRun) {
+          console.log(
+            JSON.stringify({
+              event: 'dry_run_execute',
+              executionId,
+              recommendationId: rec.recommendation_id,
+              campaignId: rec.campaign_id,
+              accountId: rec.account_id,
+              action: rec.recommended_action,
+              request,
+            }),
+          )
+          response = { resourceName: `[dry_run] ${campaignResource}` }
+        } else {
+          response = await adsClient.mutateCampaignTargetRoas(
+            rec.account_id,
+            campaignResource,
+            rec.proposed_target_roas,
+          )
+        }
       } else {
         // Budget mutate path.
         if (rec.proposed_budget_brl === null) {
@@ -149,11 +185,26 @@ export function executeRouterFactory(
           budgetResource,
           amountMicros,
         }
-        response = await adsClient.mutateBudget(
-          rec.account_id,
-          budgetResource,
-          amountMicros,
-        )
+        if (dryRun) {
+          console.log(
+            JSON.stringify({
+              event: 'dry_run_execute',
+              executionId,
+              recommendationId: rec.recommendation_id,
+              campaignId: rec.campaign_id,
+              accountId: rec.account_id,
+              action: rec.recommended_action,
+              request,
+            }),
+          )
+          response = { resourceName: `[dry_run] ${budgetResource}` }
+        } else {
+          response = await adsClient.mutateBudget(
+            rec.account_id,
+            budgetResource,
+            amountMicros,
+          )
+        }
       }
 
       await execsRepo.setStatus(
@@ -166,11 +217,19 @@ export function executeRouterFactory(
       )
       // Persist the request/response payloads. ExecutionsRepo.setStatus only
       // touches status/completed_at/error_message, so we issue a direct UPDATE.
+      // When dry-run, embed a `dry_run: true` marker on the persisted response
+      // JSON so the audit row reflects that no real mutate happened. The
+      // `executions` schema has no dedicated flag column, so we annotate the
+      // existing `google_ads_response` payload (and the resourceName itself
+      // carries the `[dry_run]` prefix for at-a-glance scanning).
+      const persistedResponse = dryRun
+        ? { ...response, dry_run: true }
+        : response
       await c.env.DB.exec(
         `UPDATE executions
          SET google_ads_request = ?, google_ads_response = ?
          WHERE execution_id = ?`,
-        [JSON.stringify(request), JSON.stringify(response), executionId],
+        [JSON.stringify(request), JSON.stringify(persistedResponse), executionId],
       )
       await recsRepo.setStatus(rec.recommendation_id, 'executed')
 
@@ -178,6 +237,7 @@ export function executeRouterFactory(
         executionId,
         status: 'success',
         resourceName: response.resourceName,
+        ...(dryRun ? { dryRun: true } : {}),
       })
     } catch (e) {
       const msg = (e as Error).message

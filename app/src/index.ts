@@ -28,6 +28,15 @@ export interface Env {
   INGEST_TOKEN?: string
   GODEPLOY_CRON_KEY?: string
   EXECUTE_TOKEN?: string
+  /**
+   * Safety flag for the executor. When set to the literal string '1', the
+   * executor builds the Google Ads mutate request as usual but SKIPS the real
+   * `mutateBudget`/`mutateCampaignTargetRoas` call and writes a synthetic
+   * success row instead. Used to smoke the approval loop end-to-end on first
+   * deploys without mutating real campaigns. Any other value (or unset) means
+   * real mutate.
+   */
+  DRY_RUN_EXECUTE?: string
   ALLOW_UNAUTHENTICATED_CHAT?: string
   // In-worker auth (Google OAuth + Chat JWT). Set by the controller via
   // setAppSecret once Cloud Console setup is complete. When SESSION_SECRET is

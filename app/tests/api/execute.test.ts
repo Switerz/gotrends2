@@ -315,6 +315,126 @@ describe('POST /api/execute/:id', () => {
     expect(await res.json()).toEqual({ error: 'unauthorized' })
   })
 
+  // ---------------------------------------------------------------------------
+  // DRY_RUN_EXECUTE='1' — executor builds the request, logs it, writes a
+  // success execution row, but does NOT call the ads client. Used to smoke
+  // the approval loop end-to-end on first deploys without mutating real
+  // campaigns.
+  // ---------------------------------------------------------------------------
+  it('DRY_RUN_EXECUTE=1 skips budget mutate but still records success', async () => {
+    const fake = makeFakeClient()
+    const { app, env, db } = await setupApp({
+      row: baseRow({ proposed_budget_brl: 1234.56 }),
+      fakeClient: fake.client,
+    })
+    ;(env as Env & { DRY_RUN_EXECUTE?: string }).DRY_RUN_EXECUTE = '1'
+
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      executionId: string
+      status: string
+      resourceName: string
+      dryRun?: boolean
+    }
+    expect(body.status).toBe('success')
+    expect(body.dryRun).toBe(true)
+    expect(body.resourceName.startsWith('[dry_run] ')).toBe(true)
+
+    // The ads client must NOT have been invoked.
+    expect(fake.budgetCalls.length).toBe(0)
+    expect(fake.roasCalls.length).toBe(0)
+
+    // The execution row should be 'success' and carry the dry-run marker in
+    // the persisted google_ads_response payload.
+    const execs = db.tables.get('executions') ?? []
+    expect(execs.length).toBe(1)
+    expect(execs[0]!.status).toBe('success')
+    expect(execs[0]!.attempt_number).toBe(1)
+    expect(execs[0]!.completed_at).toBeTruthy()
+    const responseJson = JSON.parse(String(execs[0]!.google_ads_response)) as {
+      dry_run?: boolean
+      resourceName: string
+    }
+    expect(responseJson.dry_run).toBe(true)
+    expect(responseJson.resourceName.startsWith('[dry_run] ')).toBe(true)
+    // Request payload must still be persisted exactly as we WOULD have sent.
+    const requestJson = JSON.parse(String(execs[0]!.google_ads_request)) as {
+      kind: string
+      amountMicros: number
+    }
+    expect(requestJson.kind).toBe('mutateBudget')
+    expect(requestJson.amountMicros).toBe(Math.round(1234.56 * 1_000_000))
+
+    // Recommendation transitions to 'executed' as in the real path.
+    const recs = db.tables.get('recommendations') ?? []
+    expect(recs[0]!.status).toBe('executed')
+  })
+
+  it('DRY_RUN_EXECUTE=1 skips target_roas mutate but still records success', async () => {
+    const fake = makeFakeClient()
+    const { app, env, db } = await setupApp({
+      row: baseRow({
+        recommended_action: 'increase_troas_or_reduce_budget',
+        current_target_roas: 3.0,
+        proposed_target_roas: 3.5,
+        proposed_budget_brl: null,
+      }),
+      fakeClient: fake.client,
+    })
+    ;(env as Env & { DRY_RUN_EXECUTE?: string }).DRY_RUN_EXECUTE = '1'
+
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { status: string; dryRun?: boolean }
+    expect(body.status).toBe('success')
+    expect(body.dryRun).toBe(true)
+
+    expect(fake.roasCalls.length).toBe(0)
+    expect(fake.budgetCalls.length).toBe(0)
+
+    const execs = db.tables.get('executions') ?? []
+    expect(execs[0]!.status).toBe('success')
+    const responseJson = JSON.parse(String(execs[0]!.google_ads_response)) as {
+      dry_run?: boolean
+    }
+    expect(responseJson.dry_run).toBe(true)
+
+    const recs = db.tables.get('recommendations') ?? []
+    expect(recs[0]!.status).toBe('executed')
+  })
+
+  it('DRY_RUN_EXECUTE unset → real mutate path still runs', async () => {
+    const fake = makeFakeClient()
+    const { app, env, db } = await setupApp({
+      row: baseRow({ proposed_budget_brl: 500 }),
+      fakeClient: fake.client,
+    })
+    // Explicitly do NOT set DRY_RUN_EXECUTE.
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { dryRun?: boolean }
+    expect(body.dryRun).toBeUndefined()
+    expect(fake.budgetCalls.length).toBe(1)
+    const execs = db.tables.get('executions') ?? []
+    const responseJson = JSON.parse(String(execs[0]!.google_ads_response)) as {
+      dry_run?: boolean
+    }
+    expect(responseJson.dry_run).toBeUndefined()
+  })
+
+  it('DRY_RUN_EXECUTE="0" (string) is NOT treated as dry-run', async () => {
+    const fake = makeFakeClient()
+    const { app, env } = await setupApp({
+      row: baseRow({ proposed_budget_brl: 500 }),
+      fakeClient: fake.client,
+    })
+    ;(env as Env & { DRY_RUN_EXECUTE?: string }).DRY_RUN_EXECUTE = '0'
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(200)
+    expect(fake.budgetCalls.length).toBe(1)
+  })
+
   it('500 server_misconfigured when EXECUTE_TOKEN env missing', async () => {
     const { app, env } = await setupApp({
       row: baseRow(),
