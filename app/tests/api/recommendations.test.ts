@@ -5,8 +5,11 @@
 // + AccountsRepo to round-trip rows through the route. Schema bootstrap is
 // stubbed by ignoring DDL/seed exec calls (we don't need real tables here).
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import worker, { _resetBootstrapForTests, type Env } from '@/index'
+import { makeFakeDb } from '../db/repos/_fakeDb'
+import { RecommendationsRepo } from '@/db/repos/recommendations'
+import type { RecommendationRow } from '@/db/types'
 import type { GodeployDB } from '@/db/bootstrap'
 import { TEST_SESSION_SECRET, makeSessionCookie } from '../auth/_helpers'
 
@@ -224,5 +227,228 @@ describe('GET /api/recommendations', () => {
     expect((dto['account'] as Record<string, unknown>)['id']).toBe('acc-1')
     expect((dto['campaign'] as Record<string, unknown>)['name']).toBe('Search NB')
     expect((dto['expected'] as Record<string, unknown>)['marginalRoas']).toBe(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// POST /api/recommendations/:id/(approve|reject)
+// ---------------------------------------------------------------------------
+//
+// These mirror the audit-trail contract of /chat/webhook but are driven by the
+// SPA's session cookie rather than a Chat-issued JWT. We use the real
+// _fakeDb so the row-write paths (approvals, chat_messages, status flip)
+// actually exercise the repos.
+
+function makeBootstrapTolerantEnv(over: Partial<Env> = {}): {
+  env: Env
+  db: ReturnType<typeof makeFakeDb>
+} {
+  const realDb = makeFakeDb()
+  const realExec = realDb.exec.bind(realDb)
+  const wrappedDb: GodeployDB = {
+    async exec(sql: string, params?: unknown[]) {
+      const head = sql.trim().toUpperCase()
+      if (
+        head.startsWith('CREATE TABLE') ||
+        head.startsWith('CREATE INDEX') ||
+        head.startsWith('CREATE UNIQUE') ||
+        head.startsWith('CREATE VIEW') ||
+        head.startsWith('CREATE TRIGGER') ||
+        head.startsWith('DROP TABLE') ||
+        head.startsWith('DROP VIEW') ||
+        head.startsWith('DROP INDEX') ||
+        head.startsWith('PRAGMA') ||
+        head.startsWith('INSERT OR IGNORE') ||
+        head.startsWith('INSERT OR REPLACE')
+      ) {
+        return { rowsWritten: 0 }
+      }
+      return realExec(sql, params)
+    },
+    query: realDb.query.bind(realDb),
+  }
+  const env: Env = {
+    DB: wrappedDb,
+    SESSION_SECRET: TEST_SESSION_SECRET,
+    ...over,
+  } as Env
+  return { env, db: realDb }
+}
+
+async function seedRec(
+  db: ReturnType<typeof makeFakeDb>,
+  over: Partial<RecommendationRow> = {},
+): Promise<string> {
+  const recId = over.recommendation_id ?? 'rec-decision-1'
+  const row: Omit<RecommendationRow, 'created_at' | 'updated_at'> = {
+    recommendation_id: recId,
+    run_id: 'run-1',
+    account_id: 'acc-1',
+    campaign_id: 'c-1',
+    campaign_name: 'Search NB',
+    skill_type: 'budget_reallocation',
+    recommended_action: 'increase_budget',
+    change_percent: 0.1,
+    current_budget_brl: 100,
+    proposed_budget_brl: 110,
+    current_target_roas: null,
+    proposed_target_roas: null,
+    expected_incremental_cost_brl: 10,
+    expected_incremental_revenue_brl: 30,
+    expected_marginal_roas: 3,
+    projected_cos: 0.2,
+    confidence_score: 80,
+    risk_level: 'medium',
+    reason: 'roas trending up',
+    guardrail_status: 'ok',
+    guardrail_reason: null,
+    llm_payload: null,
+    llm_explanation: null,
+    status: 'sent_to_chat',
+    expires_at: null,
+    ...over,
+  } as Omit<RecommendationRow, 'created_at' | 'updated_at'>
+  await new RecommendationsRepo(db).insert(row)
+  return recId
+}
+
+async function postDecision(
+  env: Env,
+  id: string,
+  action: 'approve' | 'reject',
+  withCookie = true,
+): Promise<Response> {
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (withCookie) headers.cookie = await makeSessionCookie()
+  return worker.fetch(
+    new Request(`http://x/api/recommendations/${id}/${action}`, {
+      method: 'POST',
+      headers,
+    }),
+    env,
+    {} as ExecutionContext,
+  )
+}
+
+describe('POST /api/recommendations/:id/(approve|reject)', () => {
+  beforeEach(() => _resetBootstrapForTests())
+  afterEach(() => vi.restoreAllMocks())
+
+  it('returns 401 without a session cookie', async () => {
+    const { env, db } = makeBootstrapTolerantEnv()
+    await seedRec(db)
+    const res = await postDecision(env, 'rec-decision-1', 'approve', false)
+    expect(res.status).toBe(401)
+  })
+
+  it('approve happy path: writes approval + chat_message, flips status, auto-triggers execute', async () => {
+    const { env, db } = makeBootstrapTolerantEnv({ EXECUTE_TOKEN: 'exec-tok' })
+    await seedRec(db, { recommendation_id: 'rec-approve' })
+
+    const executeCalls: Array<{ url: string; init: RequestInit | undefined }> = []
+    const realFetch = globalThis.fetch
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url
+      if (url.includes('/api/execute/')) {
+        executeCalls.push({ url, init })
+        return new Response('{}', { status: 200 })
+      }
+      return realFetch(input, init)
+    })
+
+    const res = await postDecision(env, 'rec-approve', 'approve')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; decision: string; recommendationId: string }
+    expect(body).toEqual({ ok: true, decision: 'approved', recommendationId: 'rec-approve' })
+
+    const rec = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-approve')
+    expect(rec?.['status']).toBe('approved')
+
+    const approvals = db.tables.get('approvals') ?? []
+    expect(approvals).toHaveLength(1)
+    expect(approvals[0]!['decision']).toBe('approved')
+    expect(approvals[0]!['decided_via']).toBe('web_ui')
+    expect(approvals[0]!['decided_by']).toBe('pedro@gobeaute.com.br')
+    expect(approvals[0]!['account_id']).toBe('acc-1')
+
+    const chats = db.tables.get('chat_messages') ?? []
+    expect(chats).toHaveLength(1)
+    expect(chats[0]!['direction']).toBe('inbound')
+    expect(chats[0]!['space_id']).toBeNull()
+    const payload = JSON.parse(String(chats[0]!['payload']))
+    expect(payload).toEqual({
+      source: 'web_ui',
+      action: 'approve',
+      decided_by: 'pedro@gobeaute.com.br',
+    })
+
+    expect(executeCalls).toHaveLength(1)
+    expect(executeCalls[0]!.url).toMatch(/\/api\/execute\/rec-approve$/)
+    const headers = (executeCalls[0]!.init?.headers ?? {}) as Record<string, string>
+    expect(headers['x-execute-token']).toBe('exec-tok')
+  })
+
+  it('reject happy path: flips status to rejected, does not auto-trigger execute', async () => {
+    const { env, db } = makeBootstrapTolerantEnv({ EXECUTE_TOKEN: 'exec-tok' })
+    await seedRec(db, { recommendation_id: 'rec-reject' })
+
+    const executeCalls: string[] = []
+    const realFetch = globalThis.fetch
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url
+      if (url.includes('/api/execute/')) {
+        executeCalls.push(url)
+        return new Response('{}', { status: 200 })
+      }
+      return realFetch(input, init)
+    })
+
+    const res = await postDecision(env, 'rec-reject', 'reject')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { decision: string }
+    expect(body.decision).toBe('rejected')
+
+    const rec = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-reject')
+    expect(rec?.['status']).toBe('rejected')
+
+    const approvals = db.tables.get('approvals') ?? []
+    expect(approvals[0]!['decision']).toBe('rejected')
+    expect(executeCalls).toEqual([])
+  })
+
+  it('returns 404 when the recommendation is unknown', async () => {
+    const { env } = makeBootstrapTolerantEnv()
+    const res = await postDecision(env, 'rec-missing', 'approve')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'not_found' })
+  })
+
+  it('returns 409 when the recommendation is no longer pending', async () => {
+    const { env, db } = makeBootstrapTolerantEnv()
+    await seedRec(db, { recommendation_id: 'rec-terminal', status: 'executed' })
+    const res = await postDecision(env, 'rec-terminal', 'approve')
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: string; currentStatus: string }
+    expect(body.error).toBe('not_pending')
+    expect(body.currentStatus).toBe('executed')
+  })
+
+  it('still succeeds (status=approved) even if the auto-execute call fails', async () => {
+    const { env, db } = makeBootstrapTolerantEnv({ EXECUTE_TOKEN: 'exec-tok' })
+    await seedRec(db, { recommendation_id: 'rec-exec-fail' })
+
+    const realFetch = globalThis.fetch
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url
+      if (url.includes('/api/execute/')) {
+        throw new Error('network down')
+      }
+      return realFetch(input, init)
+    })
+
+    const res = await postDecision(env, 'rec-exec-fail', 'approve')
+    expect(res.status).toBe(200)
+    const rec = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-exec-fail')
+    expect(rec?.['status']).toBe('approved')
   })
 })

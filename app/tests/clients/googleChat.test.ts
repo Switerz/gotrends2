@@ -22,13 +22,15 @@ function baseInput(overrides: Partial<RecommendationCardInput> = {}): Recommenda
   }
 }
 
+const TEST_ORIGIN = 'https://gotrends-agent.devgogroup.com'
+
 // Type helpers to inspect builder output without strict shape coupling.
 interface Widget {
   decoratedText?: { topLabel?: string; text?: string }
   buttonList?: {
     buttons: Array<{
       text: string
-      onClick: { action: { function: string; parameters: Array<{ key: string; value: string }> } }
+      onClick: { openLink: { url: string } }
       color: { red: number; green: number; blue: number }
     }>
   }
@@ -47,9 +49,13 @@ function textOf(card: ReturnType<typeof buildRecommendationCard>, label: string)
   return w?.decoratedText?.text
 }
 
+function build(overrides: Partial<RecommendationCardInput> = {}, origin = TEST_ORIGIN) {
+  return buildRecommendationCard(baseInput(overrides), origin)
+}
+
 describe('buildRecommendationCard', () => {
   it('builds a basic happy card with header, ≥7 decoratedText widgets, and 1 buttonList with 2 buttons', () => {
-    const card = buildRecommendationCard(baseInput())
+    const card = build()
     const top = card.cardsV2[0]!
     expect(top.cardId).toBe('rec-123')
     expect(top.card.header.title).toBe('Reduce spend by 20%')
@@ -65,62 +71,75 @@ describe('buildRecommendationCard', () => {
   })
 
   it('hides buttons when guardrailStatus=blocked', () => {
-    const card = buildRecommendationCard(baseInput({ guardrailStatus: 'blocked' }))
+    const card = build({ guardrailStatus: 'blocked' })
     const buttonLists = widgetsOf(card).filter(w => w.buttonList)
     expect(buttonLists).toHaveLength(0)
   })
 
   it('shows buttons when guardrailStatus=ok or needs_human_review', () => {
-    const ok = buildRecommendationCard(baseInput({ guardrailStatus: 'ok' }))
-    const review = buildRecommendationCard(baseInput({ guardrailStatus: 'needs_human_review' }))
+    const ok = build({ guardrailStatus: 'ok' })
+    const review = build({ guardrailStatus: 'needs_human_review' })
     expect(findButtonList(ok)).toBeDefined()
     expect(findButtonList(review)).toBeDefined()
     expect(findButtonList(ok)!.buttons).toHaveLength(2)
     expect(findButtonList(review)!.buttons).toHaveLength(2)
   })
 
-  it('button onClick parameters carry the recommendation id under key "rec" for both Approve and Reject', () => {
-    const card = buildRecommendationCard(baseInput({ recommendationId: 'rec-xyz' }))
+  it('Approve / Reject buttons use openLink URLs into the SPA carrying the recommendation id and ?action=', () => {
+    const card = build({ recommendationId: 'rec-xyz' })
     const btns = findButtonList(card)!.buttons
-    const approve = btns.find(b => b.onClick.action.function === 'approve')!
-    const reject = btns.find(b => b.onClick.action.function === 'reject')!
-    expect(approve.text).toBe('Aprovar')
-    expect(approve.onClick.action.parameters).toEqual([{ key: 'rec', value: 'rec-xyz' }])
-    expect(reject.text).toBe('Rejeitar')
-    expect(reject.onClick.action.parameters).toEqual([{ key: 'rec', value: 'rec-xyz' }])
+    const approve = btns.find(b => b.text === 'Aprovar')!
+    const reject = btns.find(b => b.text === 'Rejeitar')!
+    expect(approve.onClick.openLink.url).toBe(
+      `${TEST_ORIGIN}/recommendations/rec-xyz?action=approve`,
+    )
+    expect(reject.onClick.openLink.url).toBe(
+      `${TEST_ORIGIN}/recommendations/rec-xyz?action=reject`,
+    )
+  })
+
+  it('trims a trailing slash on appOrigin so URLs never get a double slash', () => {
+    const card = buildRecommendationCard(
+      baseInput({ recommendationId: 'rec-slash' }),
+      `${TEST_ORIGIN}/`,
+    )
+    const btns = findButtonList(card)!.buttons
+    expect(btns[0]!.onClick.openLink.url).toBe(
+      `${TEST_ORIGIN}/recommendations/rec-slash?action=approve`,
+    )
   })
 
   it('formats BRL: 1234.56 → "R$ 1.234,56", -42.50 → "-R$ 42,50", null → "—"', () => {
-    const card1 = buildRecommendationCard(baseInput({ expectedRevenueBrl: 1234.56 }))
+    const card1 = build({ expectedRevenueBrl: 1234.56 })
     expect(textOf(card1, 'Receita incremental esperada')).toBe('R$ 1.234,56')
 
-    const card2 = buildRecommendationCard(baseInput({ expectedRevenueBrl: -42.5 }))
+    const card2 = build({ expectedRevenueBrl: -42.5 })
     expect(textOf(card2, 'Receita incremental esperada')).toBe('-R$ 42,50')
 
-    const card3 = buildRecommendationCard(baseInput({ expectedRevenueBrl: null }))
+    const card3 = build({ expectedRevenueBrl: null })
     expect(textOf(card3, 'Receita incremental esperada')).toBe('—')
   })
 
   it('formats percentages: 0.123 → "12,3%", -0.05 → "-5,0%", null → "—"', () => {
-    const card1 = buildRecommendationCard(baseInput({ changePercent: 0.123 }))
+    const card1 = build({ changePercent: 0.123 })
     expect(textOf(card1, 'Mudança proposta')).toBe('12,3%')
 
-    const card2 = buildRecommendationCard(baseInput({ changePercent: -0.05 }))
+    const card2 = build({ changePercent: -0.05 })
     expect(textOf(card2, 'Mudança proposta')).toBe('-5,0%')
 
-    const card3 = buildRecommendationCard(baseInput({ changePercent: null }))
+    const card3 = build({ changePercent: null })
     expect(textOf(card3, 'Mudança proposta')).toBe('—')
   })
 
   it('renders null numeric/text fields as em-dash and never produces empty widget texts', () => {
-    const card = buildRecommendationCard(baseInput({
+    const card = build({
       changePercent: null,
       expectedRevenueBrl: null,
       expectedCostBrl: null,
       marginalRoas: null,
       confidence: null,
       risk: null,
-    }))
+    })
     const decoratedTexts = widgetsOf(card)
       .filter(w => w.decoratedText)
       .map(w => w.decoratedText!.text)
@@ -140,7 +159,7 @@ describe('buildRecommendationCard', () => {
   })
 
   it('formats marginalRoas: 2.987 → "2,99" (2 decimals)', () => {
-    const card = buildRecommendationCard(baseInput({ marginalRoas: 2.987 }))
+    const card = build({ marginalRoas: 2.987 })
     expect(textOf(card, 'ROAS marginal')).toBe('2,99')
   })
 })
@@ -152,7 +171,7 @@ describe('GoogleChatClient.postCard', () => {
       headers: { 'content-type': 'application/json' },
     }))
     const client = new GoogleChatClient(fetcher)
-    const card = buildRecommendationCard(baseInput())
+    const card = build()
     const result = await client.postCard('https://chat.googleapis.com/v1/spaces/AAA/messages?key=k&token=t', card)
 
     expect(result).toEqual({ name: 'spaces/X/messages/Y' })
@@ -172,7 +191,7 @@ describe('GoogleChatClient.postCard', () => {
   it('throws on non-2xx responses, including status code and snippet of body', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => new Response('INVALID_ARGUMENT: bad cardsV2', { status: 400 }))
     const client = new GoogleChatClient(fetcher)
-    await expect(client.postCard('https://example.invalid', buildRecommendationCard(baseInput())))
+    await expect(client.postCard('https://example.invalid', build()))
       .rejects.toThrow(/googleChat 400/)
   })
 

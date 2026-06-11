@@ -1,4 +1,5 @@
-import { useParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { useRecommendation } from '~/hooks/useRecommendation'
 import { Card, CardBody, CardHeader } from '~/components/ui/Card'
 import { Badge, guardrailTone, riskTone, statusTone } from '~/components/ui/Badge'
@@ -6,6 +7,8 @@ import { Tabs } from '~/components/ui/Tabs'
 import { Spinner } from '~/components/ui/Spinner'
 import { fmtBrl, fmtNumber, fmtPct, fmtRelative } from '~/lib/formatters'
 import { actionLabel } from '~/lib/actionLabels'
+
+type AutoActionStatus = 'idle' | 'running' | 'success' | 'error'
 
 function LabeledValue({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -36,6 +39,77 @@ function ConfidenceBlock({ value }: { value: number | null }) {
 
 export default function RecommendationDetail() {
   const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
+  const rawAction = searchParams.get('action')
+  const action: 'approve' | 'reject' | null =
+    rawAction === 'approve' || rawAction === 'reject' ? rawAction : null
+
+  // Auto-action flow runs only when ?action=approve|reject is present on the URL.
+  // This is how the Google Chat openLink buttons land us here: the SPA posts to
+  // /api/recommendations/:id/(approve|reject) using the session cookie, then
+  // attempts to close the tab. Browsers may block window.close() for tabs that
+  // weren't opened by JS — in that case the success view stays visible with a
+  // "you can close this tab" hint.
+  const [autoActionStatus, setAutoActionStatus] = useState<AutoActionStatus>(
+    action ? 'running' : 'idle',
+  )
+  const [autoActionError, setAutoActionError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!action || !id) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await fetch(`/api/recommendations/${id}/${action}`, {
+          method: 'POST',
+          headers: { accept: 'application/json' },
+          credentials: 'include',
+        })
+        if (cancelled) return
+        if (res.status === 401) {
+          // Not logged in — bounce through Google OAuth, preserving the action
+          // URL so the effect re-runs after the redirect lands us back here.
+          const next = window.location.pathname + window.location.search
+          window.location.href = `/api/auth/login?next=${encodeURIComponent(next)}`
+          return
+        }
+        if (!res.ok) {
+          const text = await res.text().catch(() => '')
+          throw new Error(`${res.status}: ${text.slice(0, 200)}`)
+        }
+        setAutoActionStatus('success')
+        // Brief success view, then attempt to close the tab.
+        setTimeout(() => {
+          if (cancelled) return
+          window.close()
+        }, 1200)
+      } catch (e) {
+        if (cancelled) return
+        setAutoActionStatus('error')
+        setAutoActionError((e as Error).message)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [action, id])
+
+  // When ?action= is present, render a focused full-page pane instead of the
+  // normal detail view — the user came here to confirm a decision, not browse.
+  if (action) {
+    return (
+      <AutoActionPane
+        action={action}
+        status={autoActionStatus}
+        error={autoActionError}
+      />
+    )
+  }
+
+  return <RecommendationDetailView id={id} />
+}
+
+function RecommendationDetailView({ id }: { id: string | undefined }) {
   const { data: rec, error, isLoading } = useRecommendation(id)
 
   if (isLoading) {
@@ -245,6 +319,67 @@ export default function RecommendationDetail() {
       <div className="mt-8 text-[11px] font-mono text-ink-400">
         Criada {fmtRelative(rec.createdAt)} · atualizada {fmtRelative(rec.updatedAt)}
         {rec.expiresAt ? <> · expira em {fmtRelative(rec.expiresAt)}</> : null}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Full-screen pane rendered while the SPA is processing a Google Chat
+ * Approve / Reject openLink click. Driven entirely by the URL's ?action= and
+ * the parent's effect; this component is purely presentational.
+ */
+function AutoActionPane({
+  action,
+  status,
+  error,
+}: {
+  action: 'approve' | 'reject'
+  status: AutoActionStatus
+  error: string | null
+}) {
+  const verbRunning = action === 'approve' ? 'Aprovando' : 'Rejeitando'
+  const verbDone = action === 'approve' ? 'Aprovada' : 'Rejeitada'
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-ink-900 text-ink-100 px-6">
+      <div className="hairline rounded-card bg-ink-800 p-10 max-w-md text-center">
+        {status === 'running' && (
+          <>
+            <div className="animate-pulse text-ink-300 font-mono text-xs uppercase tracking-[0.12em] mb-3">
+              {verbRunning}…
+            </div>
+            <div className="font-display text-3xl">⏳</div>
+          </>
+        )}
+        {status === 'success' && (
+          <>
+            <div className="font-display text-3xl mb-2">Recomendação {verbDone}</div>
+            <p className="text-sm text-ink-300 mb-3">Pode fechar esta aba.</p>
+            <p className="text-[10px] text-ink-400 font-mono uppercase tracking-[0.08em]">
+              Esta aba se fechará automaticamente em instantes
+            </p>
+          </>
+        )}
+        {status === 'error' && (
+          <>
+            <div className="font-display text-2xl mb-2 text-coral">
+              Não foi possível processar
+            </div>
+            <p className="text-sm text-ink-300 mb-3">{error ?? 'erro desconhecido'}</p>
+            <button
+              type="button"
+              onClick={() => window.close()}
+              className="px-4 py-2 bg-ink-700 hairline rounded-card text-sm hover:bg-ink-600"
+            >
+              Fechar
+            </button>
+          </>
+        )}
+        {status === 'idle' && (
+          <div className="text-ink-300 font-mono text-xs uppercase tracking-[0.12em]">
+            Preparando…
+          </div>
+        )}
       </div>
     </div>
   )

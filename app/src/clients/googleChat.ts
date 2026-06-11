@@ -31,8 +31,23 @@ function fmtPct(v: number | null): string {
   return `${(v * 100).toFixed(1).replace('.', ',')}%`
 }
 
-export function buildRecommendationCard(i: RecommendationCardInput) {
+/**
+ * Build a Google Chat card v2 payload for a recommendation. The Approve /
+ * Reject buttons use `openLink` rather than `action.function` because the
+ * card is posted via the space's incoming webhook URL — Google Chat doesn't
+ * know which Chat App owns the message, so it has no app to dispatch button
+ * callbacks to. Instead, each button opens a new tab on our SPA at
+ * `<appOrigin>/recommendations/<id>?action=approve|reject`; the SPA reads
+ * the query string, POSTs to /api/recommendations/:id/(approve|reject) using
+ * the user's existing Google OAuth session, then closes the tab.
+ *
+ * @param i         The card content.
+ * @param appOrigin Origin of the SPA (e.g. https://gotrends-agent.devgogroup.com).
+ *                  Must be a fully-qualified scheme://host (no trailing slash).
+ */
+export function buildRecommendationCard(i: RecommendationCardInput, appOrigin: string) {
   const blocked = i.guardrailStatus === 'blocked'
+  const trimmedOrigin = appOrigin.replace(/\/+$/, '')
   return {
     cardsV2: [{
       cardId: i.recommendationId,
@@ -52,12 +67,20 @@ export function buildRecommendationCard(i: RecommendationCardInput) {
                 buttons: [
                   {
                     text: 'Aprovar',
-                    onClick: { action: { function: 'approve', parameters: [{ key: 'rec', value: i.recommendationId }] } },
+                    onClick: {
+                      openLink: {
+                        url: `${trimmedOrigin}/recommendations/${i.recommendationId}?action=approve`,
+                      },
+                    },
                     color: { red: 0.1, green: 0.6, blue: 0.2 },
                   },
                   {
                     text: 'Rejeitar',
-                    onClick: { action: { function: 'reject', parameters: [{ key: 'rec', value: i.recommendationId }] } },
+                    onClick: {
+                      openLink: {
+                        url: `${trimmedOrigin}/recommendations/${i.recommendationId}?action=reject`,
+                      },
+                    },
                     color: { red: 0.7, green: 0.1, blue: 0.1 },
                   },
                 ],

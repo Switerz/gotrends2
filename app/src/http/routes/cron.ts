@@ -139,6 +139,7 @@ export async function sendPendingToChat(env: Env): Promise<
   if (!webhookUrl) {
     return { skipped: true, reason: 'no_webhook' }
   }
+  const appOrigin = env.APP_ORIGIN ?? 'https://gotrends-agent.devgogroup.com'
   const recsRepo = new RecommendationsRepo(env.DB)
   const chatRepo = new ChatRepo(env.DB)
   const chat = new GoogleChatClient()
@@ -167,21 +168,24 @@ export async function sendPendingToChat(env: Env): Promise<
       continue
     }
 
-    const card = buildRecommendationCard({
-      recommendationId: rec.recommendation_id,
-      headline: `${rec.recommended_action} em ${rec.campaign_name}`,
-      campaign: rec.campaign_name,
-      changePercent: rec.change_percent,
-      expectedRevenueBrl: rec.expected_incremental_revenue_brl,
-      expectedCostBrl: rec.expected_incremental_cost_brl,
-      marginalRoas: rec.expected_marginal_roas,
-      confidence: rec.confidence_score,
-      risk: rec.risk_level,
-      guardrailStatus: rec.guardrail_status as
-        | 'ok'
-        | 'needs_human_review'
-        | 'blocked',
-    })
+    const card = buildRecommendationCard(
+      {
+        recommendationId: rec.recommendation_id,
+        headline: `${rec.recommended_action} em ${rec.campaign_name}`,
+        campaign: rec.campaign_name,
+        changePercent: rec.change_percent,
+        expectedRevenueBrl: rec.expected_incremental_revenue_brl,
+        expectedCostBrl: rec.expected_incremental_cost_brl,
+        marginalRoas: rec.expected_marginal_roas,
+        confidence: rec.confidence_score,
+        risk: rec.risk_level,
+        guardrailStatus: rec.guardrail_status as
+          | 'ok'
+          | 'needs_human_review'
+          | 'blocked',
+      },
+      appOrigin,
+    )
 
     // Insert the outbound chat_messages row FIRST (in-flight marker). If the
     // insert fails no post happened — safe to retry. If the insert succeeds
