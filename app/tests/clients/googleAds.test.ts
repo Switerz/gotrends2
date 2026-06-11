@@ -271,4 +271,10 @@ describe('GoogleAdsClient', () => {
     expect(params.get('client_secret')).toBe('csecret')
     expect(params.get('refresh_token')).toBe('rtok')
   })
+
+  it('uses the global fetch when no fetcher is injected (smoke check on constructor default)', () => {
+    // Just verifies construction with a single arg compiles and does not throw.
+    const client = new GoogleAdsClient(cfg)
+    expect(client).toBeInstanceOf(GoogleAdsClient)
+  })
 })

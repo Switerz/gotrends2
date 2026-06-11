@@ -25,10 +25,16 @@ interface MetabaseDatasetResponse {
 }
 
 export class MetabaseClient {
+  private readonly fetcher: Fetcher
   constructor(
     private readonly cfg: MetabaseConfig,
-    private readonly fetcher: Fetcher = fetch,
-  ) {}
+    fetcher?: Fetcher,
+  ) {
+    // Wrap global fetch in an arrow so the call site never sets `this` to the
+    // class instance. Cloudflare Workers' fetch enforces `this === globalThis`
+    // and throws `Illegal invocation` otherwise.
+    this.fetcher = fetcher ?? ((...args) => fetch(...args))
+  }
 
   /**
    * Execute a native SQL query against the configured Metabase database and

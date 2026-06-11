@@ -175,6 +175,12 @@ describe('GoogleChatClient.postCard', () => {
     await expect(client.postCard('https://example.invalid', buildRecommendationCard(baseInput())))
       .rejects.toThrow(/googleChat 400/)
   })
+
+  it('uses the global fetch when no fetcher is injected (smoke check on constructor default)', () => {
+    // Just verifies construction with no args compiles and does not throw.
+    const client = new GoogleChatClient()
+    expect(client).toBeInstanceOf(GoogleChatClient)
+  })
 })
 
 describe('parseInteractionEvent', () => {

@@ -12,11 +12,17 @@ type Fetcher = typeof fetch
 export class GoogleAdsClient {
   private accessToken: string | null = null
   private tokenExpiresAtMs = 0
+  private readonly fetcher: Fetcher
 
   constructor(
     private cfg: GoogleAdsConfig,
-    private fetcher: Fetcher = fetch,
-  ) {}
+    fetcher?: Fetcher,
+  ) {
+    // Wrap global fetch in an arrow so the call site never sets `this` to the
+    // class instance. Cloudflare Workers' fetch enforces `this === globalThis`
+    // and throws `Illegal invocation` otherwise.
+    this.fetcher = fetcher ?? ((...args) => fetch(...args))
+  }
 
   private get version(): string {
     return this.cfg.apiVersion ?? 'v20'

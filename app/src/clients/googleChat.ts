@@ -73,7 +73,13 @@ export function buildRecommendationCard(i: RecommendationCardInput) {
 // ---- Outbound client ----
 
 export class GoogleChatClient {
-  constructor(private fetcher: Fetcher = fetch) {}
+  private readonly fetcher: Fetcher
+  constructor(fetcher?: Fetcher) {
+    // Wrap global fetch in an arrow so the call site never sets `this` to the
+    // class instance. Cloudflare Workers' fetch enforces `this === globalThis`
+    // and throws `Illegal invocation` otherwise.
+    this.fetcher = fetcher ?? ((...args) => fetch(...args))
+  }
 
   async postCard(webhookUrl: string, body: ReturnType<typeof buildRecommendationCard>): Promise<{ name: string }> {
     const res = await this.fetcher(webhookUrl, {
