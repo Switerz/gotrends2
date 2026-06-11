@@ -3,11 +3,19 @@
 // Browser-facing OAuth endpoints (mounted at /api/auth in src/http/index.ts —
 // the /api/ prefix is required because the Godeploy asset handler swallows
 // bare /auth/* paths and serves the SPA shell instead of the worker):
-//   GET  /api/auth/login     → 302 to Google consent (sets CSRF state cookie)
+//   GET  /api/auth/login     → with Accept: application/json returns
+//                              { url, state } JSON (sets CSRF state cookie);
+//                              otherwise 302 to Google consent (legacy)
 //   GET  /api/auth/callback  → exchanges code for identity, sets session
-//                              cookie, redirects back to "/"
+//                              cookie; with Accept: application/json returns
+//                              { ok: true, email }, otherwise redirects to "/"
 //   POST /api/auth/logout    → clears the session cookie
 //   GET  /api/auth/me        → cheap "am I logged in?" check used by the SPA
+//
+// The JSON variants exist because Godeploy's SPA `not_found_handling` mode
+// intercepts ALL Accept: text/html requests (including /api/auth/*) and serves
+// the SPA shell. The SPA does the navigation itself: fetch JSON, then
+// window.location to Google.
 //
 // Identity is gated by `ALLOWED_EMAIL_DOMAIN` (default `gobeaute.com.br`) so
 // even a successful Google login outside the domain is rejected with 403.
@@ -41,6 +49,11 @@ authRouter.get('/login', (c) => {
   const state = crypto.randomUUID()
   const url = buildAuthorizeUrl(c.env, state)
   c.header('Set-Cookie', buildStateCookie(state))
+
+  const accept = c.req.header('accept') ?? ''
+  if (accept.includes('application/json')) {
+    return c.json({ url, state })
+  }
   return c.redirect(url)
 })
 
@@ -82,6 +95,11 @@ authRouter.get('/callback', async (c) => {
 
   c.header('Set-Cookie', buildSetCookieHeader(session))
   c.header('Set-Cookie', clearStateCookie(), { append: true })
+
+  const accept = c.req.header('accept') ?? ''
+  if (accept.includes('application/json')) {
+    return c.json({ ok: true, email: user.email })
+  }
   return c.redirect('/')
 })
 

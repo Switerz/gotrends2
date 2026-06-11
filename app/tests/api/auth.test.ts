@@ -28,7 +28,7 @@ function makeEnv(over: Partial<Env> = {}): Env {
 describe('GET /api/auth/login', () => {
   beforeEach(() => _resetBootstrapForTests())
 
-  it('redirects to Google with a state cookie set', async () => {
+  it('redirects to Google with a state cookie set (default Accept)', async () => {
     const res = await worker.fetch(
       new Request('http://x/api/auth/login'),
       makeEnv(),
@@ -40,6 +40,35 @@ describe('GET /api/auth/login', () => {
     expect(loc).toMatch(/client_id=test-client-id/)
     expect(loc).toMatch(/redirect_uri=https%3A%2F%2Fgotrends-agent\.devgogroup\.com%2Fapi%2Fauth%2Fcallback/)
     expect(loc).toMatch(/scope=openid\+email\+profile/)
+    const cookie = res.headers.get('set-cookie') ?? ''
+    expect(cookie).toMatch(/gotrends_oauth_state=/)
+    expect(cookie).toMatch(/HttpOnly/)
+  })
+
+  it('redirects to Google when Accept is text/html (legacy browser path)', async () => {
+    const res = await worker.fetch(
+      new Request('http://x/api/auth/login', { headers: { accept: 'text/html' } }),
+      makeEnv(),
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location') ?? '').toMatch(/accounts\.google\.com/)
+  })
+
+  it('returns JSON { url, state } when Accept: application/json (SPA path)', async () => {
+    const res = await worker.fetch(
+      new Request('http://x/api/auth/login', {
+        headers: { accept: 'application/json' },
+      }),
+      makeEnv(),
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { url: string; state: string }
+    expect(body.url).toMatch(/^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/)
+    expect(body.url).toMatch(/client_id=test-client-id/)
+    expect(body.state).toMatch(/^[0-9a-f-]{36}$/)
+    // Cookie must still be set so the callback can validate the state.
     const cookie = res.headers.get('set-cookie') ?? ''
     expect(cookie).toMatch(/gotrends_oauth_state=/)
     expect(cookie).toMatch(/HttpOnly/)
@@ -75,7 +104,7 @@ describe('GET /api/auth/callback', () => {
     expect(res.status).toBe(400)
   })
 
-  it('exchanges code, sets session cookie, redirects to /', async () => {
+  it('exchanges code, sets session cookie, redirects to / (default Accept)', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : (input as Request).url
       if (url.startsWith('https://oauth2.googleapis.com/token')) {
@@ -100,6 +129,40 @@ describe('GET /api/auth/callback', () => {
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
     // Both the session and the state-cleanup cookie should be set.
+    const cookies = res.headers.getSetCookie?.() ?? []
+    const allCookies = cookies.length > 0 ? cookies.join('; ') : res.headers.get('set-cookie') ?? ''
+    expect(allCookies).toMatch(/gotrends_session=/)
+  })
+
+  it('returns JSON { ok, email } when Accept: application/json (SPA path)', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url
+      if (url.startsWith('https://oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok-1' }), { status: 200 })
+      }
+      if (url.startsWith('https://www.googleapis.com/oauth2/v3/userinfo')) {
+        return new Response(
+          JSON.stringify({ email: 'pedro@gobeaute.com.br', name: 'Pedro' }),
+          { status: 200 },
+        )
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+
+    const res = await worker.fetch(
+      new Request('http://x/api/auth/callback?code=abc&state=match', {
+        headers: {
+          cookie: 'gotrends_oauth_state=match',
+          accept: 'application/json',
+        },
+      }),
+      makeEnv(),
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; email: string }
+    expect(body.ok).toBe(true)
+    expect(body.email).toBe('pedro@gobeaute.com.br')
     const cookies = res.headers.getSetCookie?.() ?? []
     const allCookies = cookies.length > 0 ? cookies.join('; ') : res.headers.get('set-cookie') ?? ''
     expect(allCookies).toMatch(/gotrends_session=/)
