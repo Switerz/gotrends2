@@ -29,6 +29,15 @@ export interface Env {
   GODEPLOY_CRON_KEY?: string
   EXECUTE_TOKEN?: string
   ALLOW_UNAUTHENTICATED_CHAT?: string
+  // In-worker auth (Google OAuth + Chat JWT). Set by the controller via
+  // setAppSecret once Cloud Console setup is complete. When SESSION_SECRET is
+  // unset, `requireSession` fails closed with 500 — the app cannot be flipped
+  // public until these are in place.
+  SESSION_SECRET?: string
+  GOOGLE_OAUTH_CLIENT_ID?: string
+  GOOGLE_OAUTH_CLIENT_SECRET?: string
+  ALLOWED_EMAIL_DOMAIN?: string
+  APP_ORIGIN?: string
 }
 
 let bootstrapped = false

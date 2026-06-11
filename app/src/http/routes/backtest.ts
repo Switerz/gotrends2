@@ -30,8 +30,10 @@ import {
   outcomeCounts,
   type BacktestRow,
 } from '@/models/backtesting'
+import { requireSession } from '@/http/middleware'
 
 export const backtestRouter = new Hono<{ Bindings: Env }>()
+backtestRouter.use('*', requireSession)
 
 interface RawJoinRow {
   recommendation_id: string

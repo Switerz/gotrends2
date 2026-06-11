@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import worker, { _resetBootstrapForTests, type Env } from '@/index'
 import type { GodeployDB } from '@/db/bootstrap'
+import { TEST_SESSION_SECRET, makeSessionCookie } from '../auth/_helpers'
 
 interface Row {
   [k: string]: unknown
@@ -35,7 +36,7 @@ function makeEnv(runs: Row[]): Env {
       return { columns: [], rows: [], rowsRead: 0 }
     },
   }
-  return { DB: db } as Env
+  return { DB: db, SESSION_SECRET: TEST_SESSION_SECRET } as Env
 }
 
 function materialize(rows: Row[]) {
@@ -63,12 +64,27 @@ function makeRun(over: Partial<Row> = {}): Row {
 }
 
 const fetchJson = async (env: Env, url: string) => {
-  const res = await worker.fetch(new Request(`http://x${url}`), env, {} as ExecutionContext)
+  const cookie = await makeSessionCookie()
+  const res = await worker.fetch(
+    new Request(`http://x${url}`, { headers: { cookie } }),
+    env,
+    {} as ExecutionContext,
+  )
   return { status: res.status, body: (await res.json()) as unknown }
 }
 
 describe('GET /api/runs', () => {
   beforeEach(() => _resetBootstrapForTests())
+
+  it('returns 401 when no session cookie is present', async () => {
+    const env = makeEnv([])
+    const res = await worker.fetch(
+      new Request('http://x/api/runs?account_id=acc-1'),
+      env,
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(401)
+  })
 
   it('returns 400 when account_id is missing', async () => {
     const env = makeEnv([])

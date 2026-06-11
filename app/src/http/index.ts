@@ -16,8 +16,10 @@ import { chatWebhookRouter } from './routes/chatWebhook'
 import { executeRouter } from './routes/execute'
 import { cronRouter } from './routes/cron'
 import { backtestRouter } from './routes/backtest'
+import { authRouter } from './routes/auth'
 
 export function mountApi<T extends Hono<{ Bindings: Env }>>(app: T): T {
+  app.route('/auth', authRouter)
   app.route('/api', healthRouter)
   app.route('/api/recommendations', recsRouter)
   app.route('/api/runs', runsRouter)

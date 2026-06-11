@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import worker, { _resetBootstrapForTests, type Env } from '@/index'
 import type { GodeployDB } from '@/db/bootstrap'
+import { TEST_SESSION_SECRET, makeSessionCookie } from '../auth/_helpers'
 
 interface CapturedQuery {
   sql: string
@@ -27,17 +28,32 @@ function makeEnv(canned: { columns: string[]; rows: unknown[][] }, captured: Cap
       return { columns: [], rows: [], rowsRead: 0 }
     },
   }
-  return { DB: db } as Env
+  return { DB: db, SESSION_SECRET: TEST_SESSION_SECRET } as Env
+}
+
+async function authedRequest(url: string): Promise<Request> {
+  const cookie = await makeSessionCookie()
+  return new Request(url, { headers: { cookie } })
 }
 
 describe('GET /api/decision-log', () => {
   beforeEach(() => _resetBootstrapForTests())
 
+  it('returns 401 when no session cookie is present', async () => {
+    const env = makeEnv({ columns: [], rows: [] }, [])
+    const res = await worker.fetch(
+      new Request('http://x/api/decision-log'),
+      env,
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(401)
+  })
+
   it('filters by account_id when provided', async () => {
     const captured: CapturedQuery[] = []
     const env = makeEnv({ columns: ['recommendation_id'], rows: [['r-1']] }, captured)
     const res = await worker.fetch(
-      new Request('http://x/api/decision-log?account_id=acc-1&limit=50'),
+      await authedRequest('http://x/api/decision-log?account_id=acc-1&limit=50'),
       env,
       {} as ExecutionContext,
     )
@@ -50,7 +66,7 @@ describe('GET /api/decision-log', () => {
   it('applies a default limit of 200 when none is provided', async () => {
     const captured: CapturedQuery[] = []
     const env = makeEnv({ columns: [], rows: [] }, captured)
-    await worker.fetch(new Request('http://x/api/decision-log'), env, {} as ExecutionContext)
+    await worker.fetch(await authedRequest('http://x/api/decision-log'), env, {} as ExecutionContext)
     expect(captured).toHaveLength(1)
     expect(captured[0]!.sql).not.toMatch(/WHERE account_id/)
     expect(captured[0]!.params).toEqual([200])
@@ -68,7 +84,11 @@ describe('GET /api/decision-log', () => {
       },
       captured,
     )
-    const res = await worker.fetch(new Request('http://x/api/decision-log'), env, {} as ExecutionContext)
+    const res = await worker.fetch(
+      await authedRequest('http://x/api/decision-log'),
+      env,
+      {} as ExecutionContext,
+    )
     const body = (await res.json()) as Array<Record<string, unknown>>
     expect(body).toEqual([
       { recommendation_id: 'r-1', account_id: 'acc-1', skill_type: 'budget_reallocation', status: 'pending' },

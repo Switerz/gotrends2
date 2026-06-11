@@ -3,9 +3,12 @@
 // Google Chat interactive webhook. Google Chat POSTs to this endpoint when a
 // user clicks an Approve / Reject button on a recommendation card.
 //
+// Auth: every Chat request is signed with an RS256 JWT issued by
+// `chat@system.gserviceaccount.com`, audience `<APP_ORIGIN>/chat/webhook`.
+// Verification happens in `requireChatJwt` (applied below as router-level
+// middleware); the handler can assume the caller is Google Chat.
+//
 // Responsibilities:
-//  - lightweight verification token auth (opt-in: enforced only when the env
-//    var is set; absent in dev means traffic is allowed through)
 //  - parse the interaction event via @/clients/googleChat#parseInteractionEvent
 //  - load the recommendation, verify it is in an actionable state
 //  - write the audit trail: chat_messages (inbound) + approvals
@@ -23,39 +26,13 @@ import { RecommendationsRepo } from '@/db/repos/recommendations'
 import { ApprovalsRepo } from '@/db/repos/approvals'
 import { ChatRepo } from '@/db/repos/chat'
 import { uuid } from '@/lib/uuid'
+import { requireChatJwt } from '@/http/middleware'
 
 export const chatWebhookRouter = new Hono<{ Bindings: Env }>()
+chatWebhookRouter.use('*', requireChatJwt)
 
 /** POST /chat/webhook — invoked by Google Chat on button click. */
 chatWebhookRouter.post('/webhook', async (c) => {
-  // Lightweight auth: Google Chat is configured with a verification token at
-  // bot registration time. Fails closed by default: if the env var is unset we
-  // return 500 server_misconfigured unless the explicit dev opt-in
-  // `ALLOW_UNAUTHENTICATED_CHAT=1` is set. When the env var IS set we require
-  // the request to carry it either via Authorization: Bearer <token> or ?token=.
-  const expected = c.env.GOOGLE_CHAT_VERIFICATION_TOKEN
-  const allowUnauth = c.env.ALLOW_UNAUTHENTICATED_CHAT === '1'
-  if (!expected) {
-    if (!allowUnauth) {
-      return c.json(
-        {
-          error: 'server_misconfigured',
-          detail: 'GOOGLE_CHAT_VERIFICATION_TOKEN not set',
-        },
-        500,
-      )
-    }
-    // explicit dev opt-in: accept without verification
-  } else {
-    const authHeader = c.req.header('authorization') ?? ''
-    const bearer = authHeader.replace(/^Bearer\s+/i, '')
-    const queryTok = c.req.query('token') ?? ''
-    const token = bearer || queryTok
-    if (token !== expected) {
-      return c.json({ error: 'unauthorized' }, 401)
-    }
-  }
-
   let payload: unknown
   try {
     payload = await c.req.json()

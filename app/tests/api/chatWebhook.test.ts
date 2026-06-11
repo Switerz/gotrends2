@@ -6,15 +6,21 @@
 // don't hit the fakeDb's "unsupported SQL" guard for DDL), and the repo-shaped
 // SQL falls through to the real `makeFakeDb` from tests/db/repos/_fakeDb.ts.
 //
+// Auth: every request carries a freshly minted RS256 JWT signed by the
+// test fixture. The fixture also mocks the JWKS endpoint so `verifyChatJwt`
+// resolves against the matching public key.
+//
 // Tests cover:
-//   1. 401 when verification token is set but the request omits it
-//   2. 200 OK when the env var is absent (dev mode degrades open)
-//   3. happy-path approve: status flips to 'approved' + audit rows present
-//   4. happy-path reject:  status flips to 'rejected'
-//   5. 404 when the recommendation id is unknown
-//   6. 409 when the recommendation is already in a terminal state
-//   7. 400 when the payload is malformed (missing rec parameter)
-//   8. 409 idempotency: a second click on the same approved rec is rejected
+//   1. 401 when the Authorization header is missing
+//   2. 401 when the JWT is malformed
+//   3. 401 when the JWT has the wrong issuer / audience / signature
+//   4. happy-path approve: status flips + audit rows present
+//   5. happy-path reject:  status flips to 'rejected'
+//   6. 404 when the recommendation id is unknown
+//   7. 409 when the recommendation is already in a terminal state
+//   8. 400 when the payload is malformed (missing rec parameter)
+//   9. 409 idempotency: a second click on the same approved rec is rejected
+//  10. auto-execute on approval, with token / without token / on failure
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import worker, { _resetBootstrapForTests, type Env } from '@/index'
@@ -22,14 +28,14 @@ import { makeFakeDb } from '../db/repos/_fakeDb'
 import { RecommendationsRepo } from '@/db/repos/recommendations'
 import type { GodeployDB } from '@/db/bootstrap'
 import type { RecommendationRow } from '@/db/types'
+import { makeJwtFixture, makeValidChatJwt } from '../auth/_jwtFixture'
+import { CHAT_ISSUER } from '@/auth/googleJwt'
 
 // --- helpers ----------------------------------------------------------------
 
-/**
- * Build an Env whose `DB` is the full fakeDb engine but whose `exec()` first
- * intercepts DDL + seed-style statements (which the fakeDb doesn't understand)
- * and lets every other repo-shaped SQL fall through to the real engine.
- */
+const APP_ORIGIN = 'https://gotrends-agent.devgogroup.com'
+const AUDIENCE = `${APP_ORIGIN}/chat/webhook`
+
 function makeBootstrapTolerantEnv(over: Partial<Env> = {}): {
   env: Env
   db: ReturnType<typeof makeFakeDb>
@@ -39,9 +45,6 @@ function makeBootstrapTolerantEnv(over: Partial<Env> = {}): {
   const wrappedDb: GodeployDB = {
     async exec(sql: string, params?: unknown[]) {
       const head = sql.trim().toUpperCase()
-      // Bootstrap-only statements the fakeDb engine doesn't model: DDL, PRAGMAs,
-      // and the seed inserts (`INSERT OR IGNORE` / `INSERT OR REPLACE`). Swallow
-      // them so tests focus on the route's repo-shaped writes only.
       if (
         head.startsWith('CREATE TABLE') ||
         head.startsWith('CREATE INDEX') ||
@@ -63,9 +66,9 @@ function makeBootstrapTolerantEnv(over: Partial<Env> = {}): {
   }
   const env: Env = {
     DB: wrappedDb,
+    APP_ORIGIN,
     ...over,
   } as Env
-  // expose the underlying fakeDb so tests can poke at .tables
   return { env, db: realDb }
 }
 
@@ -106,7 +109,6 @@ async function seedRecommendationAsync(
   return recId
 }
 
-/** Build an interaction payload mirroring what Google Chat sends. */
 function buildInteractionPayload(opts: {
   action: 'approve' | 'reject'
   recommendationId: string | null
@@ -133,100 +135,139 @@ function buildInteractionPayload(opts: {
   }
 }
 
-function webhookRequest(payload: unknown, init: RequestInit = {}): Request {
+function webhookRequest(payload: unknown, init: RequestInit = {}, jwt?: string): Request {
+  const baseHeaders: Record<string, string> = { 'content-type': 'application/json' }
+  if (jwt) baseHeaders.authorization = `Bearer ${jwt}`
+  const { headers: initHeaders, ...rest } = init
   return new Request('http://x/chat/webhook', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
     body: typeof payload === 'string' ? payload : JSON.stringify(payload),
-    ...init,
+    ...rest,
+    headers: { ...baseHeaders, ...((initHeaders as Record<string, string>) ?? {}) },
   } as RequestInit)
 }
 
 // --- tests ------------------------------------------------------------------
 
 describe('POST /chat/webhook', () => {
-  beforeEach(() => _resetBootstrapForTests())
+  let fixture: Awaited<ReturnType<typeof makeJwtFixture>>
+  let validJwt: string
 
-  it('returns 401 when GOOGLE_CHAT_VERIFICATION_TOKEN is set and the header is missing', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({
-      GOOGLE_CHAT_VERIFICATION_TOKEN: 's3cret',
-    })
+  beforeEach(async () => {
+    _resetBootstrapForTests()
+    fixture = await makeJwtFixture()
+    fixture.installFetchMock()
+    validJwt = await makeValidChatJwt(fixture, AUDIENCE)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns 401 when the Authorization header is missing', async () => {
+    const { env, db } = makeBootstrapTolerantEnv()
+    await seedRecommendationAsync(db)
+    const res = await worker.fetch(
+      webhookRequest(buildInteractionPayload({ action: 'approve', recommendationId: 'rec-test-1' })),
+      env,
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(401)
+    const body = (await res.json()) as { error: string; detail: string }
+    expect(body.error).toBe('unauthorized')
+    expect(body.detail).toMatch(/missing bearer/)
+  })
+
+  it('returns 401 when the JWT is malformed', async () => {
+    const { env, db } = makeBootstrapTolerantEnv()
     await seedRecommendationAsync(db)
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'approve', recommendationId: 'rec-test-1' }),
+        {},
+        'this.is.not-a-real-jwt',
       ),
       env,
       {} as ExecutionContext,
     )
     expect(res.status).toBe(401)
-    expect(await res.json()).toEqual({ error: 'unauthorized' })
   })
 
-  it('returns 500 server_misconfigured when both token and dev opt-in are absent (fail-closed)', async () => {
-    const { env, db } = makeBootstrapTolerantEnv() // no token, no opt-in
+  it('returns 401 when the JWT has the wrong issuer', async () => {
+    const { env, db } = makeBootstrapTolerantEnv()
     await seedRecommendationAsync(db)
-    const res = await worker.fetch(
-      webhookRequest(
-        buildInteractionPayload({ action: 'approve', recommendationId: 'rec-test-1' }),
-      ),
-      env,
-      {} as ExecutionContext,
-    )
-    expect(res.status).toBe(500)
-    const body = (await res.json()) as { error: string; detail: string }
-    expect(body.error).toBe('server_misconfigured')
-    expect(body.detail).toMatch(/GOOGLE_CHAT_VERIFICATION_TOKEN/)
-  })
-
-  it('returns 200 when ALLOW_UNAUTHENTICATED_CHAT=1 (explicit dev opt-in)', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({
-      ALLOW_UNAUTHENTICATED_CHAT: '1',
+    const now = Math.floor(Date.now() / 1000)
+    const wrongIss = await fixture.signJwt({
+      iss: 'someone-else@evil.example',
+      aud: AUDIENCE,
+      iat: now,
+      exp: now + 60,
     })
-    await seedRecommendationAsync(db)
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'approve', recommendationId: 'rec-test-1' }),
+        {},
+        wrongIss,
       ),
       env,
       {} as ExecutionContext,
     )
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { actionResponse: { type: string } }
-    expect(body.actionResponse.type).toBe('UPDATE_MESSAGE')
+    expect(res.status).toBe(401)
+  })
+
+  it('returns 401 when the JWT has the wrong audience', async () => {
+    const { env, db } = makeBootstrapTolerantEnv()
+    await seedRecommendationAsync(db)
+    const now = Math.floor(Date.now() / 1000)
+    const wrongAud = await fixture.signJwt({
+      iss: CHAT_ISSUER,
+      aud: 'https://other.example/chat/webhook',
+      iat: now,
+      exp: now + 60,
+    })
+    const res = await worker.fetch(
+      webhookRequest(
+        buildInteractionPayload({ action: 'approve', recommendationId: 'rec-test-1' }),
+        {},
+        wrongAud,
+      ),
+      env,
+      {} as ExecutionContext,
+    )
+    expect(res.status).toBe(401)
   })
 
   it('approve happy path: flips status to approved + writes approval + chat_messages', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+    const { env, db } = makeBootstrapTolerantEnv()
     await seedRecommendationAsync(db, { recommendation_id: 'rec-approve' })
 
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'approve', recommendationId: 'rec-approve' }),
+        {},
+        validJwt,
       ),
       env,
       {} as ExecutionContext,
     )
     expect(res.status).toBe(200)
 
-    // Recommendation status updated.
-    const recRow = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-approve')
+    const recRow = db.tables
+      .get('recommendations')
+      ?.find((r) => r['recommendation_id'] === 'rec-approve')
     expect(recRow?.['status']).toBe('approved')
 
-    // Approval row written.
     const approvals = db.tables.get('approvals') ?? []
     expect(approvals.length).toBe(1)
     expect(approvals[0]!['decision']).toBe('approved')
     expect(approvals[0]!['decided_via']).toBe('google_chat')
     expect(approvals[0]!['decided_by']).toBe('pedro@gobeaute.com.br')
     expect(approvals[0]!['account_id']).toBe('7705857660')
-    // Note carries chat-user metadata as JSON.
     const note = JSON.parse(String(approvals[0]!['note']))
     expect(note.displayName).toBe('Pedro Rocha')
     expect(note.chatUserId).toBe('users/12345')
     expect(note.chatMessageName).toBe('spaces/AAA/messages/BBB')
 
-    // Chat message row written (inbound).
     const chatRows = db.tables.get('chat_messages') ?? []
     expect(chatRows.length).toBe(1)
     expect(chatRows[0]!['direction']).toBe('inbound')
@@ -235,12 +276,14 @@ describe('POST /chat/webhook', () => {
   })
 
   it('reject happy path: flips status to rejected', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+    const { env, db } = makeBootstrapTolerantEnv()
     await seedRecommendationAsync(db, { recommendation_id: 'rec-reject' })
 
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'reject', recommendationId: 'rec-reject' }),
+        {},
+        validJwt,
       ),
       env,
       {} as ExecutionContext,
@@ -257,10 +300,12 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 404 when the recommendation does not exist', async () => {
-    const { env } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+    const { env } = makeBootstrapTolerantEnv()
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'approve', recommendationId: 'rec-missing' }),
+        {},
+        validJwt,
       ),
       env,
       {} as ExecutionContext,
@@ -270,7 +315,7 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 409 when the recommendation is already in a terminal state', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+    const { env, db } = makeBootstrapTolerantEnv()
     await seedRecommendationAsync(db, {
       recommendation_id: 'rec-terminal',
       status: 'executed',
@@ -278,6 +323,8 @@ describe('POST /chat/webhook', () => {
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'approve', recommendationId: 'rec-terminal' }),
+        {},
+        validJwt,
       ),
       env,
       {} as ExecutionContext,
@@ -289,11 +336,13 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 400 when the payload is malformed (missing rec parameter)', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+    const { env, db } = makeBootstrapTolerantEnv()
     await seedRecommendationAsync(db)
     const res = await worker.fetch(
       webhookRequest(
         buildInteractionPayload({ action: 'approve', recommendationId: null }),
+        {},
+        validJwt,
       ),
       env,
       {} as ExecutionContext,
@@ -305,9 +354,9 @@ describe('POST /chat/webhook', () => {
   })
 
   it('returns 400 when the body is not valid JSON', async () => {
-    const { env } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+    const { env } = makeBootstrapTolerantEnv()
     const res = await worker.fetch(
-      webhookRequest('not-json-{', { headers: {} }),
+      webhookRequest('not-json-{', { headers: {} }, validJwt),
       env,
       {} as ExecutionContext,
     )
@@ -316,128 +365,143 @@ describe('POST /chat/webhook', () => {
   })
 
   it('idempotency: a second click after approval returns 409', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+    const { env, db } = makeBootstrapTolerantEnv()
     await seedRecommendationAsync(db, { recommendation_id: 'rec-double' })
     const payload = buildInteractionPayload({ action: 'approve', recommendationId: 'rec-double' })
 
-    const first = await worker.fetch(webhookRequest(payload), env, {} as ExecutionContext)
+    const first = await worker.fetch(
+      webhookRequest(payload, {}, validJwt),
+      env,
+      {} as ExecutionContext,
+    )
     expect(first.status).toBe(200)
-    const second = await worker.fetch(webhookRequest(payload), env, {} as ExecutionContext)
+    const second = await worker.fetch(
+      webhookRequest(payload, {}, validJwt),
+      env,
+      {} as ExecutionContext,
+    )
     expect(second.status).toBe(409)
-    // Only one approval row written.
     expect((db.tables.get('approvals') ?? []).length).toBe(1)
   })
 
   describe('auto-execute on approval', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let fetchSpy: any
-    afterEach(() => {
-      if (fetchSpy) fetchSpy.mockRestore()
-    })
-
     it('fires POST /api/execute/<id> with X-Execute-Token when EXECUTE_TOKEN is set and decision=approved', async () => {
       const { env, db } = makeBootstrapTolerantEnv({
-        ALLOW_UNAUTHENTICATED_CHAT: '1',
         EXECUTE_TOKEN: 'exec-tok',
       })
       await seedRecommendationAsync(db, { recommendation_id: 'rec-auto-exec' })
 
-      fetchSpy = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response('{}', { status: 200 }))
+      // Track calls to /api/execute by extending the existing fetch mock.
+      const executeCalls: Array<{ url: string; init: RequestInit | undefined }> = []
+      const realMock = globalThis.fetch
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url
+        if (url.includes('/api/execute/')) {
+          executeCalls.push({ url, init })
+          return new Response('{}', { status: 200 })
+        }
+        return realMock(input, init)
+      })
 
       const res = await worker.fetch(
         webhookRequest(
           buildInteractionPayload({ action: 'approve', recommendationId: 'rec-auto-exec' }),
+          {},
+          validJwt,
         ),
         env,
         {} as ExecutionContext,
       )
       expect(res.status).toBe(200)
-      expect(fetchSpy).toHaveBeenCalledTimes(1)
-      const [url, init] = fetchSpy.mock.calls[0]!
-      expect(String(url)).toMatch(/\/api\/execute\/rec-auto-exec$/)
-      expect((init as RequestInit).method).toBe('POST')
-      const headers = (init as RequestInit).headers as Record<string, string>
+      expect(executeCalls).toHaveLength(1)
+      expect(executeCalls[0]!.url).toMatch(/\/api\/execute\/rec-auto-exec$/)
+      const headers = (executeCalls[0]!.init?.headers ?? {}) as Record<string, string>
       expect(headers['x-execute-token']).toBe('exec-tok')
     })
 
     it('does not fire /api/execute when EXECUTE_TOKEN is not set', async () => {
-      const { env, db } = makeBootstrapTolerantEnv({ ALLOW_UNAUTHENTICATED_CHAT: '1' })
+      const { env, db } = makeBootstrapTolerantEnv()
       await seedRecommendationAsync(db, { recommendation_id: 'rec-no-token' })
 
-      fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+      const executeCalls: string[] = []
+      const realMock = globalThis.fetch
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url
+        if (url.includes('/api/execute/')) {
+          executeCalls.push(url)
+          return new Response('{}', { status: 200 })
+        }
+        return realMock(input, init)
+      })
 
       const res = await worker.fetch(
         webhookRequest(
           buildInteractionPayload({ action: 'approve', recommendationId: 'rec-no-token' }),
+          {},
+          validJwt,
         ),
         env,
         {} as ExecutionContext,
       )
       expect(res.status).toBe(200)
-      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(executeCalls).toEqual([])
     })
 
     it('does not fire /api/execute on rejection', async () => {
-      const { env, db } = makeBootstrapTolerantEnv({
-        ALLOW_UNAUTHENTICATED_CHAT: '1',
-        EXECUTE_TOKEN: 'exec-tok',
-      })
+      const { env, db } = makeBootstrapTolerantEnv({ EXECUTE_TOKEN: 'exec-tok' })
       await seedRecommendationAsync(db, { recommendation_id: 'rec-reject-noexec' })
 
-      fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+      const executeCalls: string[] = []
+      const realMock = globalThis.fetch
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url
+        if (url.includes('/api/execute/')) {
+          executeCalls.push(url)
+          return new Response('{}', { status: 200 })
+        }
+        return realMock(input, init)
+      })
 
       const res = await worker.fetch(
         webhookRequest(
           buildInteractionPayload({ action: 'reject', recommendationId: 'rec-reject-noexec' }),
+          {},
+          validJwt,
         ),
         env,
         {} as ExecutionContext,
       )
       expect(res.status).toBe(200)
-      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(executeCalls).toEqual([])
     })
 
     it('swallows execute failures and still returns 200 to Chat', async () => {
-      const { env, db } = makeBootstrapTolerantEnv({
-        ALLOW_UNAUTHENTICATED_CHAT: '1',
-        EXECUTE_TOKEN: 'exec-tok',
-      })
+      const { env, db } = makeBootstrapTolerantEnv({ EXECUTE_TOKEN: 'exec-tok' })
       await seedRecommendationAsync(db, { recommendation_id: 'rec-exec-fail' })
 
-      fetchSpy = vi
-        .spyOn(globalThis, 'fetch')
-        .mockRejectedValue(new Error('network down'))
+      const realMock = globalThis.fetch
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url
+        if (url.includes('/api/execute/')) {
+          throw new Error('network down')
+        }
+        return realMock(input, init)
+      })
 
       const res = await worker.fetch(
         webhookRequest(
           buildInteractionPayload({ action: 'approve', recommendationId: 'rec-exec-fail' }),
+          {},
+          validJwt,
         ),
         env,
         {} as ExecutionContext,
       )
       expect(res.status).toBe(200)
-      // Recommendation remains 'approved' for manual retry.
-      const recRow = db.tables.get('recommendations')?.find((r) => r['recommendation_id'] === 'rec-exec-fail')
+      const recRow = db.tables
+        .get('recommendations')
+        ?.find((r) => r['recommendation_id'] === 'rec-exec-fail')
       expect(recRow?.['status']).toBe('approved')
     })
   })
-
-  it('accepts the verification token via Authorization: Bearer header', async () => {
-    const { env, db } = makeBootstrapTolerantEnv({
-      GOOGLE_CHAT_VERIFICATION_TOKEN: 's3cret',
-    })
-    await seedRecommendationAsync(db)
-    const res = await worker.fetch(
-      webhookRequest(
-        buildInteractionPayload({ action: 'approve', recommendationId: 'rec-test-1' }),
-        { headers: { authorization: 'Bearer s3cret' } },
-      ),
-      env,
-      {} as ExecutionContext,
-    )
-    expect(res.status).toBe(200)
-  })
 })
-

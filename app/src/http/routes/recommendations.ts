@@ -14,8 +14,10 @@ import { RecommendationsRepo } from '@/db/repos/recommendations'
 import { AccountsRepo } from '@/db/repos/accounts'
 import { toRecommendationDTO } from '@/http/dto/recommendation'
 import type { RecommendationStatus } from '@/core/types'
+import { requireSession } from '@/http/middleware'
 
 export const recsRouter = new Hono<{ Bindings: Env }>()
+recsRouter.use('*', requireSession)
 
 // GET /api/recommendations?status=pending&limit=100
 recsRouter.get('/', async (c) => {

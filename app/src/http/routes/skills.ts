@@ -8,8 +8,10 @@
 import { Hono } from 'hono'
 import type { Env } from '@/index'
 import { SKILLS } from '@/agent/skills/registry'
+import { requireSession } from '@/http/middleware'
 
 export const skillsRouter = new Hono<{ Bindings: Env }>()
+skillsRouter.use('*', requireSession)
 
 // GET /api/skills
 skillsRouter.get('/', (c) => {

@@ -9,8 +9,10 @@ import { Hono } from 'hono'
 import type { Env } from '@/index'
 import { RunsRepo } from '@/db/repos/runs'
 import { toRunDTO } from '@/http/dto/run'
+import { requireSession } from '@/http/middleware'
 
 export const runsRouter = new Hono<{ Bindings: Env }>()
+runsRouter.use('*', requireSession)
 
 // GET /api/runs?account_id=7705857660&limit=50
 runsRouter.get('/', async (c) => {

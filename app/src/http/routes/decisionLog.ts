@@ -10,8 +10,10 @@
 
 import { Hono } from 'hono'
 import type { Env } from '@/index'
+import { requireSession } from '@/http/middleware'
 
 export const decisionLogRouter = new Hono<{ Bindings: Env }>()
+decisionLogRouter.use('*', requireSession)
 
 // GET /api/decision-log?account_id=...&limit=200
 decisionLogRouter.get('/', async (c) => {
