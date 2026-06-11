@@ -70,6 +70,8 @@ export function buildRecommendationCard(i: RecommendationCardInput, appOrigin: s
                     onClick: {
                       openLink: {
                         url: `${trimmedOrigin}/recommendations/${i.recommendationId}?action=approve`,
+                        openAs: 'OVERLAY',
+                        onClose: 'RELOAD',
                       },
                     },
                     color: { red: 0.1, green: 0.6, blue: 0.2 },
@@ -79,6 +81,8 @@ export function buildRecommendationCard(i: RecommendationCardInput, appOrigin: s
                     onClick: {
                       openLink: {
                         url: `${trimmedOrigin}/recommendations/${i.recommendationId}?action=reject`,
+                        openAs: 'OVERLAY',
+                        onClose: 'RELOAD',
                       },
                     },
                     color: { red: 0.7, green: 0.1, blue: 0.1 },
