@@ -11,3 +11,23 @@ export const MAX_ABS_CHANGE_PERCENT = 0.5
 
 /** Confidence score threshold below which a recommendation goes to human review. */
 export const CONFIDENCE_REVIEW_THRESHOLD = 40
+
+/**
+ * Cumulative tROAS drift caps. Applied as soft caps — a candidate that would
+ * push the rolling sum past the threshold is downgraded to
+ * `needs_human_review`, never `blocked`, so a human can still override with
+ * full context.
+ *
+ * Why on tROAS and not budget: budget changes are passive (constrain spend;
+ * auction selection stays the same → ROAS drifts ~5–10%). tROAS changes are
+ * active signals to Smart Bidding (different keyword/audience mix → ROAS
+ * drifts 30–50%, learning phase resets). The cap is sized to keep the
+ * algorithm out of re-learning, per the Google Smart Bidding guidance.
+ *
+ * Both are absolute (|Δ|), per-mutate pct (`|Δ_i / pre_mutate_i|`). Sum is
+ * over successful executions in the window — pending or sent_to_chat recs do
+ * NOT count, but they will trip the cap at refine time of the NEXT rec if
+ * already executed.
+ */
+export const MAX_DAILY_TROAS_DRIFT = 0.40
+export const MAX_TROAS_DRIFT_7D = 0.30

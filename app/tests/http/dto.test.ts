@@ -36,6 +36,7 @@ describe('toRecommendationDTO', () => {
     guardrail_reason: null,
     llm_payload: '{"k":"v"}',
     llm_explanation: 'because trends',
+    budget_resource_name: null,
     status: 'pending',
     expires_at: '2026-06-12T00:00:00Z',
     created_at: '2026-06-10T00:00:00Z',

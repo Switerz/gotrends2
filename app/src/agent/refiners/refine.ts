@@ -16,18 +16,30 @@ import {
   deriveProposedBudget,
   deriveProposedTargetRoas,
 } from './enrich'
-import { applyGuardrails } from './guardrails'
+import {
+  applyGuardrails,
+  applyTroasDriftGuardrails,
+  mergeVerdicts,
+} from './guardrails'
 import {
   CandidateSchema,
   RecommendationSchema,
   type Recommendation,
 } from './schema'
+import type { TroasDrift } from './troasDrift'
 
 export interface RefineContext {
   /** UUID of the model_run this recommendation belongs to. */
   runId: string
   /** UUID for the recommendation row about to be inserted. */
   recommendationId: string
+  /**
+   * Pre-computed cumulative tROAS drift for this candidate's campaign. When
+   * supplied, refine() applies the daily / 7d soft caps and may downgrade a
+   * verdict from `ok` to `needs_human_review`. Omitted in tests that don't
+   * need the DB plumbing (the existing guardrails still run).
+   */
+  troasDrift?: TroasDrift
 }
 
 /** Refine a raw skill candidate into a DB-ready Recommendation.
@@ -49,7 +61,13 @@ export function refine(rawCandidate: unknown, ctx: RefineContext): Recommendatio
   const inc = deriveExpectedIncrements(c, proposed_budget_brl)
   const projected_cos = deriveProjectedCos(c, inc.revenue)
   const proposed_target_roas = deriveProposedTargetRoas(c)
-  const verdict = applyGuardrails(c)
+  const baseVerdict = applyGuardrails(c)
+  // Soft cap layer: only consulted when a drift snapshot is supplied. Merges
+  // with the base verdict, taking the more severe of the two.
+  const driftVerdict = ctx.troasDrift
+    ? applyTroasDriftGuardrails(c, proposed_target_roas, ctx.troasDrift)
+    : null
+  const verdict = mergeVerdicts(baseVerdict, driftVerdict)
 
   const candidate: Recommendation = {
     ...c,

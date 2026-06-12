@@ -172,6 +172,7 @@ describe('POST /cron/send-to-chat', () => {
         guardrail_reason: null,
         llm_payload: null,
         llm_explanation: null,
+        budget_resource_name: null,
         status: 'pending',
         expires_at: null,
       }

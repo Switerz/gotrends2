@@ -6,34 +6,33 @@ O principio do projeto e manter a decisao em uma camada deterministica/estatisti
 
 ## Estrutura do repositorio
 
-O repositorio esta dividido em duas metades durante a migracao para Godeploy:
+A migracao para Godeploy esta concluida. O worker TypeScript em `app/` e o
+sistema vivo; o pipeline Python ficou arquivado em `legacy/python/` apenas
+como referencia historica e como fonte das fixtures dos testes de paridade.
 
 ```text
-app/            # Worker TypeScript (em construcao) — este sera o sistema vivo
-legacy/python/  # Pipeline Python original — referencia de paridade, nao mais executado em producao
-  models/      # Modelos estatisticos (baseline, confianca, elasticidade, saturacao, scores)
-  queries/     # SQL de feature engineering e recomendacoes finais
-  agent/       # Camada LLM para explicacoes
-  tools/       # Scripts de extracao Google Ads / GA4 e smoke tests locais
-tools/          # Scripts cross-stack (geracao de fixtures de paridade, etc.) — preenchido durante a migracao
+app/            # Worker TypeScript — SISTEMA VIVO (deploy: Godeploy gotrends-agent)
+  src/         #   pipeline, modelos, refiner, guardrails, executor, http, db
+  client/      #   SPA React
+  tests/       #   479+ testes incluindo paridade contra fixtures Python
+legacy/python/  # ARQUIVADO em 2026-06-12 — ver legacy/python/DEPRECATED.md
+tools/          # Scripts cross-stack (geracao de fixtures, etc.)
 docs/           # Documentacao tecnica
 ```
 
-A estrutura canonica esta descrita em `docs/ARCHITECTURE.md` — consulte la antes de mover qualquer coisa.
+A estrutura canonica esta descrita em `docs/ARCHITECTURE.md`.
 
-## Onde estou na migracao
+## Status
 
-O plano ativo e:
+Pipeline rodando em producao via Godeploy:
 
-```text
-docs/plans/2026-06-10-godeploy-platform-migration.md
-```
+- Cron diario `run-models` (06:00 UTC) — geracao de recomendacoes
+- Cron `send-to-chat` 15min — push de cards no Google Chat
+- Cron `outcomes/24h` e `outcomes/72h` — coleta de realised vs expected
+- Aprovacao via SPA (`/api/recommendations/:id/approve`) com fire-and-forget executor
+- Guardrails: hard block >50%, soft caps cumulativos em tROAS (40%/dia + 30%/7d), needs_human_review por confianca/anomalia/risco
 
-Esse plano define a ordem de tarefas, contratos de dados, e criterios de paridade entre `legacy/python/` e `app/`. Toda mudanca estrutural deve referenciar uma task do plano.
-
-## Status do pipeline original (Python)
-
-Sprint 0 ate Sprint 10 concluidas para a camada local da Apice. Output local separa:
+Output local separa:
 
 ```text
 ga4_roas = raw.ga4_gogroup_all_channels.purchase_revenue / cost
@@ -41,8 +40,6 @@ ads_roas = Google Ads conversion value / cost
 ```
 
 O `roas` principal e o ROAS de negocio (`ga4_roas`). Comparacoes com `target_roas` usam `ads_roas`.
-
-A camada Python segue acessivel em `legacy/python/` como fonte de verdade enquanto a paridade com `app/` nao for atingida.
 
 ## Fonte de dados
 

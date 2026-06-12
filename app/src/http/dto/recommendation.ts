@@ -38,6 +38,18 @@ export interface RecommendationDTO {
   reason: string | null
   llmExplanation: string | null
   status: string
+  /**
+   * Snapshot of cumulative tROAS drift for this campaign at view-time. Only
+   * populated by the single-rec GET (`/api/recommendations/:id`) since the
+   * list endpoint would otherwise issue N+2 queries. Omitted entirely for
+   * non-tROAS actions.
+   */
+  troasDrift?: {
+    todayPct: number
+    sevenDayPct: number
+    dailyCapPct: number
+    sevenDayCapPct: number
+  }
   expiresAt: string | null
   createdAt: string
   updatedAt: string

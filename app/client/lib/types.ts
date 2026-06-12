@@ -24,6 +24,12 @@ export interface RecommendationDTO {
   reason: string | null
   llmExplanation: string | null
   status: string
+  troasDrift?: {
+    todayPct: number
+    sevenDayPct: number
+    dailyCapPct: number
+    sevenDayCapPct: number
+  }
   expiresAt: string | null
   createdAt: string
   updatedAt: string

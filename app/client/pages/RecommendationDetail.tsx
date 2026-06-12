@@ -21,6 +21,53 @@ function LabeledValue({ label, value }: { label: string; value: React.ReactNode 
   )
 }
 
+function DriftBar({
+  label,
+  consumed,
+  proposed,
+  cap,
+}: {
+  label: string
+  consumed: number
+  proposed: number
+  cap: number
+}) {
+  // Two-segment horizontal bar: historical consumed (sage/amber) + this rec's
+  // contribution (cobalt). Anything past the cap renders in coral.
+  const total = consumed + proposed
+  const consumedPct = Math.min(100, (consumed / cap) * 100)
+  const proposedPct = Math.min(100, Math.max(0, (proposed / cap) * 100))
+  const overflowPct = Math.max(0, ((total - cap) / cap) * 100)
+  const tone =
+    total > cap
+      ? 'text-coral'
+      : total / cap > 0.7
+        ? 'text-amber'
+        : 'text-ink-300'
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1">
+        <span className="text-[10px] uppercase tracking-[0.08em] font-mono text-ink-400">
+          {label}
+        </span>
+        <span className={`font-mono tabular-nums text-xs ${tone}`}>
+          {(total * 100).toFixed(0)}% / {(cap * 100).toFixed(0)}%
+        </span>
+      </div>
+      <div className="flex h-[6px] rounded-full bg-ink-700 overflow-hidden">
+        <div className="bg-sage/70" style={{ width: `${consumedPct}%` }} />
+        <div className="bg-cobalt/80" style={{ width: `${proposedPct}%` }} />
+        {overflowPct > 0 && (
+          <div
+            className="bg-coral"
+            style={{ width: `${Math.min(100, overflowPct)}%` }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ConfidenceBlock({ value }: { value: number | null }) {
   if (value === null || !Number.isFinite(value)) {
     return <div className="font-mono text-ink-300 tabular-nums">—</div>
@@ -274,6 +321,32 @@ function RecommendationDetailView({ id }: { id: string | undefined }) {
                 </div>
                 <div className="text-sm text-ink-200">{rec.guardrail.reason}</div>
               </>
+            )}
+
+            {rec.troasDrift && rec.proposed.targetRoas !== null && rec.current.targetRoas !== null && rec.current.targetRoas !== 0 && (
+              <div className="mt-6 flex flex-col gap-4">
+                <div className="text-[10px] uppercase tracking-[0.08em] font-mono text-ink-400">
+                  Consumo dos caps de tROAS
+                </div>
+                <DriftBar
+                  label="Hoje"
+                  consumed={rec.troasDrift.todayPct}
+                  proposed={Math.abs(
+                    (rec.proposed.targetRoas - rec.current.targetRoas) /
+                      rec.current.targetRoas,
+                  )}
+                  cap={rec.troasDrift.dailyCapPct}
+                />
+                <DriftBar
+                  label="Últimos 7 dias"
+                  consumed={rec.troasDrift.sevenDayPct}
+                  proposed={Math.abs(
+                    (rec.proposed.targetRoas - rec.current.targetRoas) /
+                      rec.current.targetRoas,
+                  )}
+                  cap={rec.troasDrift.sevenDayCapPct}
+                />
+              </div>
             )}
           </CardBody>
         </Card>

@@ -12,6 +12,7 @@
 import type { GodeployDB } from '@/db/bootstrap'
 import { RecommendationsRepo } from '@/db/repos/recommendations'
 import { refine, type RefineContext } from '@/agent/refiners/refine'
+import { computeTroasDrift } from '@/agent/refiners/troasDrift'
 import type { RecommendationRow } from '@/db/types'
 
 export type PersistDecisionContext = RefineContext
@@ -27,7 +28,20 @@ export async function persistDecision(
   rawCandidate: unknown,
   ctx: PersistDecisionContext,
 ): Promise<void> {
-  const recommendation = refine(rawCandidate, ctx)
+  // Look up tROAS drift for this campaign BEFORE refining so the guardrails
+  // can apply the soft caps. The candidate field is unvalidated at this
+  // point, so we read defensively — a missing/non-string campaign_id falls
+  // back to the zero drift snapshot (refine() will reject the candidate via
+  // CandidateSchema before reaching the guardrails anyway).
+  const campaignId =
+    typeof (rawCandidate as { campaign_id?: unknown } | null | undefined)
+      ?.campaign_id === 'string'
+      ? ((rawCandidate as { campaign_id: string }).campaign_id)
+      : ''
+  const troasDrift = ctx.troasDrift
+    ?? (await computeTroasDrift(db, campaignId, new Date().toISOString()))
+
+  const recommendation = refine(rawCandidate, { ...ctx, troasDrift })
 
   // Adapt the Zod-typed Recommendation to the DB row shape. The Recommendation
   // type carries a couple of skill-only fields (saturation_level, anomaly_flags)
@@ -57,7 +71,7 @@ export async function persistDecision(
     guardrail_reason: recommendation.guardrail_reason,
     llm_payload: recommendation.llm_payload,
     llm_explanation: recommendation.llm_explanation,
-    budget_resource_name: recommendation.budget_resource_name,
+    budget_resource_name: recommendation.budget_resource_name ?? null,
     status: recommendation.status,
     expires_at: recommendation.expires_at,
   }

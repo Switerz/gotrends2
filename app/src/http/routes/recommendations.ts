@@ -23,6 +23,11 @@ import { AccountsRepo } from '@/db/repos/accounts'
 import { ApprovalsRepo } from '@/db/repos/approvals'
 import { ChatRepo } from '@/db/repos/chat'
 import { toRecommendationDTO } from '@/http/dto/recommendation'
+import { computeTroasDrift } from '@/agent/refiners/troasDrift'
+import {
+  MAX_DAILY_TROAS_DRIFT,
+  MAX_TROAS_DRIFT_7D,
+} from '@/core/constants'
 import type { RecommendationStatus } from '@/core/types'
 import { requireSession, type SessionVars } from '@/http/middleware'
 import { uuid } from '@/lib/uuid'
@@ -59,7 +64,24 @@ recsRouter.get('/:id', async (c) => {
   const row = await repo.getById(c.req.param('id'))
   if (!row) return c.json({ error: 'not_found' }, 404)
   const acc = await accountsRepo.get(row.account_id)
-  return c.json(toRecommendationDTO(row, acc?.account_label ?? null))
+  const dto = toRecommendationDTO(row, acc?.account_label ?? null)
+
+  // Attach drift snapshot for tROAS actions so the UI can render the
+  // consumption bars without a second round trip.
+  if (row.recommended_action === 'increase_troas_or_reduce_budget') {
+    const drift = await computeTroasDrift(
+      c.env.DB,
+      row.campaign_id,
+      new Date().toISOString(),
+    )
+    dto.troasDrift = {
+      todayPct: drift.todayDriftPct,
+      sevenDayPct: drift.sevenDayDriftPct,
+      dailyCapPct: MAX_DAILY_TROAS_DRIFT,
+      sevenDayCapPct: MAX_TROAS_DRIFT_7D,
+    }
+  }
+  return c.json(dto)
 })
 
 // POST /api/recommendations/:id/approve
