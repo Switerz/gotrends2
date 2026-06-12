@@ -134,14 +134,34 @@ export function makeFakeDb(): FakeDb {
 
     if (whereRaw) {
       const clauses = whereRaw.split(/\s+AND\s+/i).map((c) => c.trim())
-      const filters: Array<{ col: string; value: unknown }> = []
+      type EqFilter = { kind: 'eq'; col: string; value: unknown }
+      type InFilter = { kind: 'in'; col: string; values: unknown[] }
+      const filters: Array<EqFilter | InFilter> = []
       for (const c of clauses) {
-        const m = c.match(/^(\w+)\s*=\s*\?$/)
-        if (!m) throw new Error(`fakeDb.query: unsupported WHERE clause: ${c}`)
-        filters.push({ col: m[1]!, value: params[paramIdx++] })
+        // `col = ?`
+        const eq = c.match(/^(\w+)\s*=\s*\?$/)
+        if (eq) {
+          filters.push({ kind: 'eq', col: eq[1]!, value: params[paramIdx++] })
+          continue
+        }
+        // `col IN ('a', 'b', 'c')` — literals only; we don't currently emit
+        // parameterised IN clauses from any repo. Strips quotes off each.
+        const inLit = c.match(/^(\w+)\s+IN\s*\(\s*(.+?)\s*\)$/i)
+        if (inLit) {
+          const values = inLit[2]!
+            .split(',')
+            .map((v) => v.trim().replace(/^['"]|['"]$/g, ''))
+          filters.push({ kind: 'in', col: inLit[1]!, values })
+          continue
+        }
+        throw new Error(`fakeDb.query: unsupported WHERE clause: ${c}`)
       }
       rows = rows.filter((r) =>
-        filters.every((f) => r[f.col] === f.value),
+        filters.every((f) =>
+          f.kind === 'eq'
+            ? r[f.col] === f.value
+            : f.values.includes(r[f.col] as string),
+        ),
       )
     }
 

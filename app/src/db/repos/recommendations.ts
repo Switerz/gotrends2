@@ -109,4 +109,34 @@ export class RecommendationsRepo {
     )
     return mapRows<RecommendationRow>(columns, rows)
   }
+
+  /**
+   * Find a non-terminal recommendation for (account_id, campaign_id), or null.
+   *
+   * "Non-terminal" = the rec can still be acted on (pending → sent_to_chat →
+   * approved → executing). Anything that landed in `executed`, `failed`,
+   * `rejected`, or `expired` is settled and does NOT block a new rec.
+   *
+   * Used by the pipeline to dedupe: if a campaign already has an in-flight
+   * recommendation, we skip generating another one in the same run window so
+   * operators never receive two conflicting cards. Returns the most recent
+   * row when multiple non-terminals exist (defensive — by design there
+   * should never be more than one, but the schema doesn't enforce that).
+   */
+  async findActiveByCampaign(
+    account_id: string,
+    campaign_id: string,
+  ): Promise<RecommendationRow | null> {
+    const { columns, rows } = await this.db.query(
+      `SELECT * FROM recommendations
+       WHERE account_id = ?
+         AND campaign_id = ?
+         AND status IN ('pending', 'sent_to_chat', 'approved', 'executing')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [account_id, campaign_id],
+    )
+    if (rows.length === 0) return null
+    return mapRow<RecommendationRow>(columns, rows[0]!)
+  }
 }

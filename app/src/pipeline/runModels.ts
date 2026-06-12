@@ -19,6 +19,7 @@ import type { GodeployDB } from '@/db/bootstrap'
 import type { MetabaseClient } from '@/clients/metabase'
 import type { GoogleAdsClient } from '@/clients/googleAds'
 import { RunsRepo } from '@/db/repos/runs'
+import { RecommendationsRepo } from '@/db/repos/recommendations'
 import { uuid } from '@/lib/uuid'
 import { leftJoin } from '@/lib/df'
 import { buildBaselineTrendFeatures } from '@/models/baselineTrend'
@@ -48,6 +49,10 @@ export interface RunResult {
   status: 'success' | 'failed'
   nCampaignsScanned: number
   nRecommendations: number
+  /** Campaigns the pipeline would have written a rec for but skipped because
+   *  a non-terminal rec for the same campaign already existed. Surfaces the
+   *  dedup behaviour so operators can spot stuck queues at a glance. */
+  nSkippedDedup: number
   errors: string[]
 }
 
@@ -100,6 +105,7 @@ export async function runModelsForAccount(
         status: 'success',
         nCampaignsScanned: 0,
         nRecommendations: 0,
+        nSkippedDedup: 0,
         errors,
       }
     }
@@ -136,11 +142,37 @@ export async function runModelsForAccount(
     const constraints = applyGuardrails(scored)
 
     let nRecs = 0
+    let nSkippedDedup = 0
     const nScanned = constraints.length
+    const recsRepo = new RecommendationsRepo(db)
     for (const row of constraints) {
       try {
         const candidate = buildCandidate(row, opts.accountId)
         if (candidate === null) continue
+        // Dedup gate: one in-flight rec per campaign. If a non-terminal rec
+        // already exists (pending/sent_to_chat/approved/executing), the new
+        // candidate is dropped — operators never see two conflicting cards
+        // for the same campaign, and downstream caps don't get bypassed by
+        // double-approving. Terminal states (executed/failed/rejected/
+        // expired) free the campaign for a fresh rec.
+        const campaignId = (candidate as { campaign_id: string }).campaign_id
+        const active = await recsRepo.findActiveByCampaign(
+          opts.accountId,
+          campaignId,
+        )
+        if (active !== null) {
+          nSkippedDedup++
+          console.log(
+            JSON.stringify({
+              event: 'skipped_dedup_active_exists',
+              runId,
+              campaignId,
+              activeRecommendationId: active.recommendation_id,
+              activeStatus: active.status,
+            }),
+          )
+          continue
+        }
         await persistDecision(db, candidate, {
           runId,
           recommendationId: uuid(),
@@ -158,6 +190,7 @@ export async function runModelsForAccount(
       status: 'success',
       nCampaignsScanned: nScanned,
       nRecommendations: nRecs,
+      nSkippedDedup,
       errors,
     }
   } catch (e) {
@@ -167,6 +200,7 @@ export async function runModelsForAccount(
       status: 'failed',
       nCampaignsScanned: 0,
       nRecommendations: 0,
+      nSkippedDedup: 0,
       errors: [(e as Error).message ?? String(e)],
     }
   }

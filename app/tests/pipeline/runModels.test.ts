@@ -241,6 +241,66 @@ describe('runModelsForAccount', () => {
     expect(c1errors.length + c1recs.length).toBeLessThanOrEqual(1)
   })
 
+  it('dedup: skips campaigns that already have a non-terminal rec (counts to nSkippedDedup)', async () => {
+    const db = makeFakeDb()
+    const daily = loadDailyFixture() as Record<string, unknown>[]
+    const { metabase, googleAds } = makeClients({
+      metabaseRows: daily,
+      googleAdsRows: fakeAdsSettings(),
+    })
+
+    // First run — establishes the baseline. Whatever recs land here are now
+    // in-flight (`pending`) and should block re-generation in the next run.
+    const first = await runModelsForAccount(db, metabase, googleAds, baseOpts, NOW_ISO)
+    expect(first.status).toBe('success')
+    const firstRecCount = first.nRecommendations
+    expect(firstRecCount).toBeGreaterThan(0)
+    expect(first.nSkippedDedup).toBe(0)
+
+    // Second run with identical input — every actionable campaign should hit
+    // the dedup gate. Pipeline still scans the same set of campaigns; it just
+    // refuses to create new rows for the ones already in-flight.
+    const { metabase: m2, googleAds: g2 } = makeClients({
+      metabaseRows: daily,
+      googleAdsRows: fakeAdsSettings(),
+    })
+    const second = await runModelsForAccount(db, m2, g2, baseOpts, NOW_ISO)
+    expect(second.status).toBe('success')
+    expect(second.nRecommendations).toBe(0)
+    expect(second.nSkippedDedup).toBe(firstRecCount)
+
+    // The total rec count in the DB has NOT grown — no duplicates were written.
+    const recs = db.tables.get('recommendations') ?? []
+    expect(recs.length).toBe(firstRecCount)
+  })
+
+  it('dedup: terminal recs (executed/failed/rejected) do NOT block a fresh run', async () => {
+    const db = makeFakeDb()
+    const daily = loadDailyFixture() as Record<string, unknown>[]
+    const { metabase, googleAds } = makeClients({
+      metabaseRows: daily,
+      googleAdsRows: fakeAdsSettings(),
+    })
+
+    // First run populates recs as `pending`.
+    const first = await runModelsForAccount(db, metabase, googleAds, baseOpts, NOW_ISO)
+    expect(first.nRecommendations).toBeGreaterThan(0)
+
+    // Settle every rec into a terminal state. After this, the campaigns are
+    // free to receive a new rec on the next run.
+    const recsTable = db.tables.get('recommendations')!
+    for (const r of recsTable) r['status'] = 'executed'
+
+    const { metabase: m2, googleAds: g2 } = makeClients({
+      metabaseRows: daily,
+      googleAdsRows: fakeAdsSettings(),
+    })
+    const second = await runModelsForAccount(db, m2, g2, baseOpts, NOW_ISO)
+    expect(second.status).toBe('success')
+    expect(second.nSkippedDedup).toBe(0)
+    expect(second.nRecommendations).toBe(first.nRecommendations)
+  })
+
   it('runId is a UUID v4', async () => {
     const db = makeFakeDb()
     const { metabase, googleAds } = makeClients({

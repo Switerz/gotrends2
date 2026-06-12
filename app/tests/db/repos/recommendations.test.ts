@@ -129,4 +129,88 @@ describe('RecommendationsRepo', () => {
     const recent = await repo.listRecent()
     expect(recent.map((r) => r.recommendation_id)).toEqual(['new', 'mid', 'old'])
   })
+
+  describe('findActiveByCampaign', () => {
+    const NON_TERMINAL_STATUSES = [
+      'pending',
+      'sent_to_chat',
+      'approved',
+      'executing',
+    ] as const
+    const TERMINAL_STATUSES = [
+      'executed',
+      'failed',
+      'rejected',
+      'expired',
+    ] as const
+
+    it.each(NON_TERMINAL_STATUSES)(
+      'returns the rec when its status is %s (in-flight, blocks new gen)',
+      async (status) => {
+        const db = makeFakeDb()
+        const repo = new RecommendationsRepo(db)
+        await repo.insert(
+          baseRec({ recommendation_id: `rec-${status}`, status }),
+        )
+        const got = await repo.findActiveByCampaign('7705857660', 'camp-1')
+        expect(got).not.toBeNull()
+        expect(got?.recommendation_id).toBe(`rec-${status}`)
+        expect(got?.status).toBe(status)
+      },
+    )
+
+    it.each(TERMINAL_STATUSES)(
+      'returns null when only %s recs exist (terminal, frees the campaign)',
+      async (status) => {
+        const db = makeFakeDb()
+        const repo = new RecommendationsRepo(db)
+        await repo.insert(
+          baseRec({ recommendation_id: `rec-${status}`, status }),
+        )
+        const got = await repo.findActiveByCampaign('7705857660', 'camp-1')
+        expect(got).toBeNull()
+      },
+    )
+
+    it('returns null when no rec exists for the (account, campaign) pair', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      // Different account → not a match
+      await repo.insert(
+        baseRec({ recommendation_id: 'other', account_id: 'other-acc' }),
+      )
+      // Different campaign → not a match
+      await repo.insert(
+        baseRec({ recommendation_id: 'other-camp', campaign_id: 'camp-other' }),
+      )
+      expect(
+        await repo.findActiveByCampaign('7705857660', 'camp-1'),
+      ).toBeNull()
+    })
+
+    it('returns the most recent non-terminal rec when multiple exist (defensive)', async () => {
+      // Schema does not enforce single-active invariant — the repo defends
+      // against it by ordering DESC and taking the first row.
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(baseRec({ recommendation_id: 'older', status: 'pending' }))
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.created_at = '2026-06-01 00:00:00'
+      await repo.insert(baseRec({ recommendation_id: 'newer', status: 'sent_to_chat' }))
+      arr[1]!.created_at = '2026-06-08 00:00:00'
+      const got = await repo.findActiveByCampaign('7705857660', 'camp-1')
+      expect(got?.recommendation_id).toBe('newer')
+    })
+
+    it('ignores terminal recs when a non-terminal one is also present', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      // A failed (terminal) rec from yesterday + a pending one from today —
+      // dedup should hit the pending one.
+      await repo.insert(baseRec({ recommendation_id: 'failed-old', status: 'failed' }))
+      await repo.insert(baseRec({ recommendation_id: 'pending-now', status: 'pending' }))
+      const got = await repo.findActiveByCampaign('7705857660', 'camp-1')
+      expect(got?.recommendation_id).toBe('pending-now')
+    })
+  })
 })
