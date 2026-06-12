@@ -204,6 +204,43 @@ describe('POST /cron/send-to-chat', () => {
       fetchSpy.mockRestore()
     })
 
+    it('rec stays in sent_to_chat (operator never engaged) → next 6 cron fires NEVER re-post it', async () => {
+      // The realistic operator-fatigue scenario the user asked us to
+      // validate: a rec gets posted to Chat, operator doesn't approve OR
+      // reject, just leaves it sitting there. The cron fires every 15min;
+      // we must never re-post the same card.
+      const { env, db } = makeChatEnv()
+      await seedPendingRec(db, 'rec-stays-pending')
+
+      // First post — should land in Chat.
+      const r0 = await post(env, { 'x-godeploy-cron': 'cron-secret' }, '/cron/send-to-chat')
+      expect(((await r0.json()) as { sent: number }).sent).toBe(1)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+      // The rec naturally flips to sent_to_chat after a successful post.
+      const recAfterFirst = await new RecommendationsRepo(db).getById('rec-stays-pending')
+      expect(recAfterFirst?.status).toBe('sent_to_chat')
+
+      // Simulate 6 subsequent cron fires (= 1h30 of inaction). Operator
+      // never engages. Every single one must be a no-op.
+      for (let i = 0; i < 6; i++) {
+        const r = await post(env, { 'x-godeploy-cron': 'cron-secret' }, '/cron/send-to-chat')
+        const body = (await r.json()) as { sent: number; skipped: number }
+        expect(body.sent).toBe(0)
+        // The cron's listByStatus('pending') doesn't even pick up
+        // sent_to_chat rows, so the rec isn't iterated. `skipped` stays 0.
+        expect(body.skipped).toBe(0)
+      }
+
+      // fetch was called exactly ONCE across all 7 cron fires — no duplicate.
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+      // chat_messages table still holds exactly one outbound row.
+      const msgs = await new ChatRepo(db).listByRecommendation('rec-stays-pending')
+      expect(msgs.length).toBe(1)
+      expect(msgs[0]!.direction).toBe('outbound')
+    })
+
     it('second call does not double-post when chat_messages already has an outbound row', async () => {
       const { env, db } = makeChatEnv()
       await seedPendingRec(db, 'rec-idem-1')
