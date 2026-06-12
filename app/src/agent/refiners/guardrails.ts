@@ -137,3 +137,40 @@ export function applyTroasDriftGuardrails(
 function pct(v: number): string {
   return `${(v * 100).toFixed(0)}%`
 }
+
+/**
+ * Soft cap based on the Smart Bidding system status. Returns `null` for any
+ * candidate that should not be gated by learning state:
+ *
+ *   - non-tROAS actions (budget changes are passive; don't trigger re-learning)
+ *   - missing or `unknown` status (don't downgrade based on data we don't have)
+ *   - `stable` status (the steady-state case — most candidates land here)
+ *
+ * For `learning` and `limited`, downgrades to `needs_human_review` with a
+ * structured reason so the operator decides whether to override. We never
+ * `block` on this: the Google Ads field can be noisy and recovering from a
+ * false block requires an out-of-band intervention. `needs_human_review`
+ * preserves the safety property (no auto-apply) without the rigidity.
+ */
+export function applyLearningPhaseGuardrail(
+  c: Candidate,
+): GuardrailVerdict | null {
+  if (c.recommended_action !== 'increase_troas_or_reduce_budget') return null
+  const status = c.bidding_learning_status
+  if (status === null || status === undefined || status === 'unknown') return null
+  if (status === 'stable') return null
+
+  if (status === 'learning') {
+    return {
+      status: 'needs_human_review',
+      reason:
+        'bidding_learning_phase_active — Smart Bidding ainda está absorvendo a última mudança; novo ajuste reinicia o aprendizado',
+    }
+  }
+  // status === 'limited'
+  return {
+    status: 'needs_human_review',
+    reason:
+      'bidding_strategy_limited — campanha está limitada por outro fator (budget, bid floor/ceiling, qualidade); mudar tROAS não destrava',
+  }
+}

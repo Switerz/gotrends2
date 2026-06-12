@@ -173,6 +173,7 @@ describe('POST /cron/send-to-chat', () => {
         llm_payload: null,
         llm_explanation: null,
         budget_resource_name: null,
+        bidding_learning_status: null,
         status: 'pending',
         expires_at: null,
       }

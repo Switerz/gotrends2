@@ -64,6 +64,7 @@ function baseRow(
     // to attempt a budget mutate (precondition_failed). Tests that need to
     // smoke the "missing budget resource" branch should override to null.
     budget_resource_name: `customers/${ACCOUNT_ID}/campaignBudgets/9999`,
+    bidding_learning_status: null,
     status: 'approved' as RecommendationStatus,
     expires_at: null,
     ...overrides,

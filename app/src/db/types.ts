@@ -141,6 +141,10 @@ export interface RecommendationRow {
    *  Null when the campaign has no budget object (e.g. some Performance Max
    *  configs). Required by the executor for budget mutates. */
   budget_resource_name: string | null
+  /** Smart Bidding state snapshot — see `agent/refiners/biddingLearning.ts`.
+   *  Stored as the domain string ('stable' | 'learning' | 'limited' |
+   *  'unknown'). Null on rows written before the column existed. */
+  bidding_learning_status: string | null
   status: RecommendationStatus
   expires_at: string | null
   created_at: string

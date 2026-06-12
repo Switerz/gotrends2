@@ -25,6 +25,10 @@ import { ChatRepo } from '@/db/repos/chat'
 import { toRecommendationDTO } from '@/http/dto/recommendation'
 import { computeTroasDrift } from '@/agent/refiners/troasDrift'
 import {
+  BIDDING_LEARNING_LABELS,
+  type BiddingLearningStatus,
+} from '@/agent/refiners/biddingLearning'
+import {
   MAX_DAILY_TROAS_DRIFT,
   MAX_TROAS_DRIFT_7D,
 } from '@/core/constants'
@@ -79,6 +83,16 @@ recsRouter.get('/:id', async (c) => {
       sevenDayPct: drift.sevenDayDriftPct,
       dailyCapPct: MAX_DAILY_TROAS_DRIFT,
       sevenDayCapPct: MAX_TROAS_DRIFT_7D,
+    }
+  }
+
+  // Attach the Smart Bidding state snapshot if the pipeline captured one.
+  // Old rows (pre-migration) carry `null` and the field is simply omitted.
+  if (row.bidding_learning_status) {
+    const status = row.bidding_learning_status as BiddingLearningStatus
+    dto.biddingLearning = {
+      status,
+      label: BIDDING_LEARNING_LABELS[status] ?? row.bidding_learning_status,
     }
   }
   return c.json(dto)

@@ -41,6 +41,17 @@ export const CandidateSchema = z.object({
   // skill knows the resource); persisted as `null` when omitted. The executor
   // fail-closes if a budget mutate reaches it without this field set.
   budget_resource_name: z.string().nullable().optional(),
+
+  // Smart Bidding status at the moment the candidate was produced. Read from
+  // `campaign.bidding_strategy_system_status` via GAQL and normalised to our
+  // four-state domain (see `agent/refiners/biddingLearning.ts`). The
+  // learning-phase guardrail downgrades bid mutates when this is `learning`
+  // or `limited`. Optional: skills that don't know the value omit it, and
+  // the guardrail does NOT fire on `undefined`/`unknown`.
+  bidding_learning_status: z
+    .enum(['stable', 'learning', 'limited', 'unknown'])
+    .nullable()
+    .optional(),
 })
 export type Candidate = z.infer<typeof CandidateSchema>
 

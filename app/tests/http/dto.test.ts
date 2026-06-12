@@ -37,6 +37,7 @@ describe('toRecommendationDTO', () => {
     llm_payload: '{"k":"v"}',
     llm_explanation: 'because trends',
     budget_resource_name: null,
+    bidding_learning_status: null,
     status: 'pending',
     expires_at: '2026-06-12T00:00:00Z',
     created_at: '2026-06-10T00:00:00Z',

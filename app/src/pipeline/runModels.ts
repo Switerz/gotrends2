@@ -20,6 +20,10 @@ import type { MetabaseClient } from '@/clients/metabase'
 import type { GoogleAdsClient } from '@/clients/googleAds'
 import { RunsRepo } from '@/db/repos/runs'
 import { RecommendationsRepo } from '@/db/repos/recommendations'
+import {
+  classifyBiddingLearning,
+  type BiddingLearningStatus,
+} from '@/agent/refiners/biddingLearning'
 import { uuid } from '@/lib/uuid'
 import { leftJoin } from '@/lib/df'
 import { buildBaselineTrendFeatures } from '@/models/baselineTrend'
@@ -236,6 +240,9 @@ interface SettingsRow {
   bidding_strategy_type: string | null
   campaign_status: string | null
   budget_resource_name: string | null
+  /** Smart Bidding state classified from `bidding_strategy_system_status`.
+   *  See `agent/refiners/biddingLearning.ts` for the value semantics. */
+  bidding_learning_status: BiddingLearningStatus
 }
 
 /** Build the Metabase SQL for the daily-grain pull.
@@ -300,8 +307,13 @@ export function buildDailySql(company: string, start: string, end: string): stri
 }
 
 function buildSettingsGaql(): string {
+  // `bidding_strategy_system_status` is the unified Smart Bidding state field
+  // (ENABLED / LEARNING_* / LIMITED_* / MISCONFIGURED_*). Required by the
+  // learning-phase guardrail; absent values fall through to `unknown` and the
+  // guardrail does not fire. See agent/refiners/biddingLearning.ts.
   return `
     SELECT campaign.id, campaign.name, campaign.status, campaign.bidding_strategy_type,
+           campaign.bidding_strategy_system_status,
            campaign_budget.resource_name, campaign_budget.amount_micros,
            campaign.maximize_conversion_value.target_roas
     FROM campaign
@@ -344,6 +356,7 @@ function parseSettings(raw: unknown[]): SettingsRow[] {
         name?: string
         status?: string
         biddingStrategyType?: string
+        biddingStrategySystemStatus?: string
         maximizeConversionValue?: { targetRoas?: number | null }
       }
       campaignBudget?: {
@@ -365,6 +378,9 @@ function parseSettings(raw: unknown[]): SettingsRow[] {
       bidding_strategy_type: row.campaign?.biddingStrategyType ?? null,
       campaign_status: row.campaign?.status ?? null,
       budget_resource_name: row.campaignBudget?.resourceName ?? null,
+      bidding_learning_status: classifyBiddingLearning(
+        row.campaign?.biddingStrategySystemStatus ?? null,
+      ),
     }
   })
 }
@@ -481,5 +497,16 @@ function buildCandidate(
       typeof row['budget_resource_name'] === 'string'
         ? row['budget_resource_name']
         : null,
+    bidding_learning_status: pickLearningStatus(row['bidding_learning_status']),
   }
+}
+
+/** Narrow an unknown into a `BiddingLearningStatus`, defaulting to `unknown`
+ *  for any value we don't recognise. Kept out of the candidate builder
+ *  literal so the inline shape stays readable. */
+function pickLearningStatus(v: unknown): BiddingLearningStatus {
+  if (v === 'stable' || v === 'learning' || v === 'limited' || v === 'unknown') {
+    return v
+  }
+  return 'unknown'
 }

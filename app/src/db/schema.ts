@@ -144,6 +144,11 @@ export const SCHEMA_STATEMENTS: string[] = [
     -- the pipeline; required by the executor for budget mutates so we never
     -- synthesise a placeholder resource and submit a malformed mutate.
     budget_resource_name TEXT,
+    -- Smart Bidding state snapshot at the moment the rec was generated. One
+    -- of 'stable' | 'learning' | 'limited' | 'unknown'. Used by the SPA to
+    -- render a badge and by audit queries ("was the campaign in learning when
+    -- this rec was issued?"). The pipeline writes it; nothing else updates.
+    bidding_learning_status TEXT,
     status TEXT NOT NULL CHECK (status IN (
       'pending', 'sent_to_chat', 'approved', 'rejected',
       'expired', 'executing', 'executed', 'failed'
@@ -356,6 +361,10 @@ export interface Migration {
 export const MIGRATIONS: readonly Migration[] = [
   {
     sql: `ALTER TABLE recommendations ADD COLUMN budget_resource_name TEXT`,
+    expectIfPresent: 'duplicate column name',
+  },
+  {
+    sql: `ALTER TABLE recommendations ADD COLUMN bidding_learning_status TEXT`,
     expectIfPresent: 'duplicate column name',
   },
 ]

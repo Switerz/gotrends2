@@ -50,6 +50,15 @@ export interface RecommendationDTO {
     dailyCapPct: number
     sevenDayCapPct: number
   }
+  /**
+   * Smart Bidding state snapshot at view time. Only populated by the single
+   * rec GET when available; absent fields fall through to the SPA as
+   * undefined (no badge rendered). See `agent/refiners/biddingLearning.ts`.
+   */
+  biddingLearning?: {
+    status: 'stable' | 'learning' | 'limited' | 'unknown'
+    label: string
+  }
   expiresAt: string | null
   createdAt: string
   updatedAt: string

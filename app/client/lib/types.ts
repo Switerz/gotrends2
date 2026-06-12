@@ -30,6 +30,10 @@ export interface RecommendationDTO {
     dailyCapPct: number
     sevenDayCapPct: number
   }
+  biddingLearning?: {
+    status: 'stable' | 'learning' | 'limited' | 'unknown'
+    label: string
+  }
   expiresAt: string | null
   createdAt: string
   updatedAt: string

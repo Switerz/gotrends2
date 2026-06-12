@@ -72,6 +72,7 @@ export async function persistDecision(
     llm_payload: recommendation.llm_payload,
     llm_explanation: recommendation.llm_explanation,
     budget_resource_name: recommendation.budget_resource_name ?? null,
+    bidding_learning_status: recommendation.bidding_learning_status ?? null,
     status: recommendation.status,
     expires_at: recommendation.expires_at,
   }

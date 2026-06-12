@@ -18,6 +18,7 @@ import {
 } from './enrich'
 import {
   applyGuardrails,
+  applyLearningPhaseGuardrail,
   applyTroasDriftGuardrails,
   mergeVerdicts,
 } from './guardrails'
@@ -67,7 +68,13 @@ export function refine(rawCandidate: unknown, ctx: RefineContext): Recommendatio
   const driftVerdict = ctx.troasDrift
     ? applyTroasDriftGuardrails(c, proposed_target_roas, ctx.troasDrift)
     : null
-  const verdict = mergeVerdicts(baseVerdict, driftVerdict)
+  // Learning-phase layer: data-only, no extra context required. Reads
+  // `bidding_learning_status` off the candidate.
+  const learningVerdict = applyLearningPhaseGuardrail(c)
+  const verdict = mergeVerdicts(
+    mergeVerdicts(baseVerdict, driftVerdict),
+    learningVerdict,
+  )
 
   const candidate: Recommendation = {
     ...c,

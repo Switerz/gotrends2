@@ -83,3 +83,16 @@ export function riskTone(risk: string | null): Tone {
       return 'neutral'
   }
 }
+
+export function biddingLearningTone(status: string): Tone {
+  switch (status) {
+    case 'stable':
+      return 'sage'
+    case 'learning':
+      return 'amber'
+    case 'limited':
+      return 'coral'
+    default:
+      return 'neutral'
+  }
+}

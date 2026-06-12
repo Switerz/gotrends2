@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useRecommendation } from '~/hooks/useRecommendation'
 import { Card, CardBody, CardHeader } from '~/components/ui/Card'
-import { Badge, guardrailTone, riskTone, statusTone } from '~/components/ui/Badge'
+import { Badge, biddingLearningTone, guardrailTone, riskTone, statusTone } from '~/components/ui/Badge'
 import { Tabs } from '~/components/ui/Tabs'
 import { Spinner } from '~/components/ui/Spinner'
 import { fmtBrl, fmtNumber, fmtPct, fmtRelative } from '~/lib/formatters'
@@ -194,6 +194,11 @@ function RecommendationDetailView({ id }: { id: string | undefined }) {
         <Badge tone={statusTone(rec.status)}>{rec.status}</Badge>
         <Badge tone={guardrailTone(rec.guardrail.status)}>{rec.guardrail.status}</Badge>
         <Badge tone={riskTone(rec.risk)}>{rec.risk ?? 'sem risco'}</Badge>
+        {rec.biddingLearning && (
+          <Badge tone={biddingLearningTone(rec.biddingLearning.status)}>
+            Bidding: {rec.biddingLearning.label}
+          </Badge>
+        )}
         <span className="font-mono text-xs text-ink-300">{rec.skill}</span>
       </div>
 
