@@ -44,6 +44,14 @@ export function makeFakeDb(): FakeDb {
   ): Promise<{ rowsWritten: number }> {
     const sql = normalise(rawSql)
 
+    // ----- ALTER TABLE ... ADD COLUMN ... (no-op in fakeDb) -----
+    // Real SQLite enforces the column structure; the fake stores rows as
+    // loose objects so adding a column is a no-op. Without this branch the
+    // bootstrap migration array would explode on every test.
+    if (/^ALTER\s+TABLE\b/i.test(sql)) {
+      return { rowsWritten: 0 }
+    }
+
     // ----- INSERT -----
     const insertMatch = sql.match(
       /^INSERT(?:\s+OR\s+\w+)?\s+INTO\s+(\w+)\s*\(([^)]+)\)\s+VALUES\s*\(([^)]+)\)$/i,

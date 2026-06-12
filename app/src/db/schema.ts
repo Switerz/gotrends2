@@ -140,6 +140,10 @@ export const SCHEMA_STATEMENTS: string[] = [
     guardrail_reason TEXT,
     llm_payload TEXT,
     llm_explanation TEXT,
+    -- Google Ads resource name for the campaign's budget object. Populated by
+    -- the pipeline; required by the executor for budget mutates so we never
+    -- synthesise a placeholder resource and submit a malformed mutate.
+    budget_resource_name TEXT,
     status TEXT NOT NULL CHECK (status IN (
       'pending', 'sent_to_chat', 'approved', 'rejected',
       'expired', 'executing', 'executed', 'failed'
@@ -331,6 +335,29 @@ export const SCHEMA_STATEMENTS: string[] = [
        AND latest.max_observed_at = o1.observed_at
     ) ou ON ou.recommendation_id = r.recommendation_id
     WHERE r.created_at >= datetime('now', '-24 hours')`,
+]
+
+/**
+ * Idempotent migrations applied AFTER `SCHEMA_STATEMENTS`. Each entry MUST be
+ * safe to run repeatedly: bootstrap catches and silently ignores failures
+ * matching `expectIfPresent` so SQLite's lack of `ADD COLUMN IF NOT EXISTS`
+ * doesn't break cold start when the column was added on a previous deploy.
+ *
+ * When in doubt, prefer `CREATE TABLE IF NOT EXISTS` over a migration: the
+ * migration path exists only for columns added to tables that pre-date the
+ * change.
+ */
+export interface Migration {
+  sql: string
+  /** Substring of the error message to swallow (e.g. "duplicate column name"). */
+  expectIfPresent: string
+}
+
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    sql: `ALTER TABLE recommendations ADD COLUMN budget_resource_name TEXT`,
+    expectIfPresent: 'duplicate column name',
+  },
 ]
 
 // ---------------------------------------------------------------------------

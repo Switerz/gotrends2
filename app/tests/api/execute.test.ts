@@ -60,6 +60,10 @@ function baseRow(
     guardrail_reason: null,
     llm_payload: null,
     llm_explanation: null,
+    // Real Google Ads budget resource name — without this the executor refuses
+    // to attempt a budget mutate (precondition_failed). Tests that need to
+    // smoke the "missing budget resource" branch should override to null.
+    budget_resource_name: `customers/${ACCOUNT_ID}/campaignBudgets/9999`,
     status: 'approved' as RecommendationStatus,
     expires_at: null,
     ...overrides,
@@ -210,7 +214,7 @@ describe('POST /api/execute/:id', () => {
     expect(fake.budgetCalls.length).toBe(1)
     expect(fake.budgetCalls[0]).toEqual({
       customerId: ACCOUNT_ID,
-      budgetResource: `customers/${ACCOUNT_ID}/campaignBudgets/${CAMPAIGN_ID}_budget`,
+      budgetResource: `customers/${ACCOUNT_ID}/campaignBudgets/9999`,
       amountMicros: Math.round(1234.56 * 1_000_000),
     })
     expect(fake.roasCalls.length).toBe(0)
@@ -447,5 +451,63 @@ describe('POST /api/execute/:id', () => {
       error: 'server_misconfigured',
       detail: 'EXECUTE_TOKEN not set',
     })
+  })
+
+  it('422 precondition_failed for budget mutate when budget_resource_name is null (no mutate is attempted)', async () => {
+    const fake = makeFakeClient()
+    const { app, env, db } = await setupApp({
+      row: baseRow({ budget_resource_name: null, proposed_budget_brl: 500 }),
+      fakeClient: fake.client,
+    })
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as { error: string; detail: string; status: string }
+    expect(body.error).toBe('precondition_failed')
+    expect(body.detail).toMatch(/budget_resource_name/)
+    expect(body.status).toBe('failed')
+
+    // The Google Ads client must NOT have been called.
+    expect(fake.budgetCalls.length).toBe(0)
+    expect(fake.roasCalls.length).toBe(0)
+
+    // The execution + recommendation are flipped to 'failed' so retries are
+    // explicit (operator must intervene to fix the underlying data gap).
+    const execs = db.tables.get('executions') ?? []
+    expect(execs[0]!.status).toBe('failed')
+    expect(execs[0]!.error_message).toMatch(/budget_resource_name/)
+    const recs = db.tables.get('recommendations') ?? []
+    expect(recs[0]!.status).toBe('failed')
+  })
+
+  it('422 precondition_failed for tROAS mutate when proposed_target_roas is null', async () => {
+    const fake = makeFakeClient()
+    const { app, env } = await setupApp({
+      row: baseRow({
+        recommended_action: 'increase_troas_or_reduce_budget',
+        proposed_target_roas: null,
+      }),
+      fakeClient: fake.client,
+    })
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as { error: string; detail: string }
+    expect(body.error).toBe('precondition_failed')
+    expect(body.detail).toMatch(/proposed_target_roas/)
+    expect(fake.roasCalls.length).toBe(0)
+  })
+
+  it('422 precondition_failed for non-executable actions (monitor / improve_ads_or_terms / …)', async () => {
+    const fake = makeFakeClient()
+    const { app, env } = await setupApp({
+      row: baseRow({ recommended_action: 'improve_ads_or_terms' }),
+      fakeClient: fake.client,
+    })
+    const res = await post(app, env, REC_ID)
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as { error: string; detail: string }
+    expect(body.error).toBe('precondition_failed')
+    expect(body.detail).toMatch(/not executable/)
+    expect(fake.budgetCalls.length).toBe(0)
+    expect(fake.roasCalls.length).toBe(0)
   })
 })

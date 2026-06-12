@@ -137,10 +137,40 @@ export function executeRouterFactory(
       }
       let request: BudgetReq | RoasReq
 
-      if (
-        rec.recommended_action === 'increase_troas_or_reduce_budget' &&
-        rec.proposed_target_roas !== null
-      ) {
+      // Per-action precondition checks. We refuse to assemble a mutate when
+      // the rec is missing the data the request requires — fail-closed so
+      // Google Ads never receives a malformed payload (e.g. a synthesised
+      // budgetResource that doesn't exist). The rec is flipped to 'failed'
+      // with a structured `precondition_failed` error so postmortem is cheap.
+      const failPrecondition = async (detail: string) => {
+        await execsRepo.setStatus(
+          executionId,
+          'failed',
+          new Date().toISOString(),
+          'precondition_failed',
+          detail,
+        )
+        await recsRepo.setStatus(rec.recommendation_id, 'failed')
+        return c.json(
+          {
+            executionId,
+            status: 'failed',
+            error: 'precondition_failed',
+            detail,
+          },
+          422,
+        )
+      }
+
+      const isTroas = rec.recommended_action === 'increase_troas_or_reduce_budget'
+      const isBudget =
+        rec.recommended_action === 'increase_budget' ||
+        rec.recommended_action === 'reduce_budget'
+
+      if (isTroas) {
+        if (rec.proposed_target_roas === null) {
+          return failPrecondition('tROAS mutate requires proposed_target_roas')
+        }
         // Target ROAS mutate path.
         const campaignResource = `customers/${rec.account_id}/campaigns/${rec.campaign_id}`
         request = {
@@ -169,15 +199,21 @@ export function executeRouterFactory(
             rec.proposed_target_roas,
           )
         }
-      } else {
-        // Budget mutate path.
+      } else if (isBudget) {
+        // Budget mutate path. We use the budget resource name captured by the
+        // pipeline at run time (`SELECT campaign_budget.resource_name FROM
+        // campaign`). Synthesising it from campaign_id is invalid — the
+        // resource id has no fixed relationship to the campaign id and
+        // submitting a placeholder yields BAD_RESOURCE_ID from Google Ads.
         if (rec.proposed_budget_brl === null) {
-          throw new Error('no proposed_budget_brl to mutate')
+          return failPrecondition('budget mutate requires proposed_budget_brl')
         }
-        // Production pipelines should embed the actual budget resource name on
-        // the recommendation. For now, derive a placeholder so the request body
-        // is well-formed and the test path is exercised.
-        const budgetResource = `customers/${rec.account_id}/campaignBudgets/${rec.campaign_id}_budget`
+        if (!rec.budget_resource_name) {
+          return failPrecondition(
+            'budget mutate requires budget_resource_name (pipeline must populate it from campaign_budget.resource_name)',
+          )
+        }
+        const budgetResource = rec.budget_resource_name
         const amountMicros = Math.round(rec.proposed_budget_brl * 1_000_000)
         request = {
           kind: 'mutateBudget',
@@ -205,6 +241,16 @@ export function executeRouterFactory(
             amountMicros,
           )
         }
+      } else {
+        // Non-executable action (monitor, pause, improve_ads_or_terms,
+        // review_landing_or_offer, optimize_efficiency, …). These should
+        // never have reached an executor call — `buildCandidate` already
+        // filters monitor/pause out, and approve is exposed only via UI.
+        // Treat as a structured precondition failure rather than a 500 so
+        // the caller can show a clear message.
+        return failPrecondition(
+          `recommended_action ${rec.recommended_action} is not executable by this worker`,
+        )
       }
 
       await execsRepo.setStatus(

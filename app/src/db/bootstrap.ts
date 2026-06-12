@@ -4,7 +4,7 @@
 // (see Task 5.1) so the SQLite database is always migrated and seeded
 // before the first request is served.
 
-import { SCHEMA_STATEMENTS, SEED_ACCOUNTS, SEED_SKILLS } from './schema'
+import { MIGRATIONS, SCHEMA_STATEMENTS, SEED_ACCOUNTS, SEED_SKILLS } from './schema'
 
 /**
  * Minimal subset of the Godeploy `env.DB` interface the worker uses.
@@ -20,12 +20,26 @@ export interface GodeployDB {
   ): Promise<{ columns: string[]; rows: unknown[]; rowsRead: number }>
 }
 
-/** Run every DDL statement in `SCHEMA_STATEMENTS` in order. Safe to call repeatedly. */
+/** Run every DDL statement in `SCHEMA_STATEMENTS` in order, then apply
+ *  `MIGRATIONS`. Both halves are safe to call repeatedly. */
 export async function bootstrapSchema(db: GodeployDB): Promise<void> {
   for (const stmt of SCHEMA_STATEMENTS) {
     // Pass an explicit empty params array: the Godeploy runtime rejects exec()
     // calls without the second argument, even for parameterless DDL.
     await db.exec(stmt, [])
+  }
+  // Apply post-schema migrations. SQLite lacks `ADD COLUMN IF NOT EXISTS`, so
+  // a duplicate-column failure on a re-bootstrap means the migration was
+  // applied previously — swallow it. Any other error is rethrown.
+  for (const m of MIGRATIONS) {
+    try {
+      await db.exec(m.sql, [])
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e)
+      if (!msg.toLowerCase().includes(m.expectIfPresent.toLowerCase())) {
+        throw e
+      }
+    }
   }
 }
 

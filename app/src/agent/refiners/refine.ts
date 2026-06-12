@@ -64,6 +64,9 @@ export function refine(rawCandidate: unknown, ctx: RefineContext): Recommendatio
     guardrail_reason: verdict.reason,
     llm_payload: null,
     llm_explanation: null,
+    // Normalise undefined → null so the DB row shape never carries a
+    // missing-field hole that callers would have to defend against.
+    budget_resource_name: c.budget_resource_name ?? null,
     status: 'pending',
     expires_at: null,
   }

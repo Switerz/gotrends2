@@ -137,6 +137,10 @@ export interface RecommendationRow {
   /** JSON-encoded payload sent to the explanation LLM. */
   llm_payload: string | null
   llm_explanation: string | null
+  /** Google Ads `campaignBudget.resource_name` (e.g. `customers/123/campaignBudgets/456`).
+   *  Null when the campaign has no budget object (e.g. some Performance Max
+   *  configs). Required by the executor for budget mutates. */
+  budget_resource_name: string | null
   status: RecommendationStatus
   expires_at: string | null
   created_at: string

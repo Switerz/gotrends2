@@ -57,6 +57,7 @@ export async function persistDecision(
     guardrail_reason: recommendation.guardrail_reason,
     llm_payload: recommendation.llm_payload,
     llm_explanation: recommendation.llm_explanation,
+    budget_resource_name: recommendation.budget_resource_name,
     status: recommendation.status,
     expires_at: recommendation.expires_at,
   }

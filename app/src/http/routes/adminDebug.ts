@@ -43,6 +43,33 @@ adminDebugRouter.get('/db-shape', async (c) => {
   })
 })
 
+// GET /api/admin/debug/executions/:recommendationId
+//
+// Returns every `executions` row for a given recommendation, including the
+// raw google_ads_request/response payloads and error_message. Used to
+// post-mortem failed mutates (status=502 from /api/execute/:id) without
+// having to ssh into the worker.
+adminDebugRouter.get('/executions/:recommendationId', async (c) => {
+  const id = c.req.param('recommendationId')
+  const { columns, rows } = await c.env.DB.query(
+    `SELECT * FROM executions
+     WHERE recommendation_id = ?
+     ORDER BY attempt_number DESC`,
+    [id],
+  )
+  const out = rows.map((r) => {
+    if (Array.isArray(r)) {
+      const obj: Record<string, unknown> = {}
+      columns.forEach((col, i) => {
+        obj[col] = (r as unknown[])[i]
+      })
+      return obj
+    }
+    return r as Record<string, unknown>
+  })
+  return c.json({ recommendationId: id, executions: out })
+})
+
 // GET /api/admin/debug/counts
 //
 // Returns COUNT(*) for every well-known table so we can spot empty seed

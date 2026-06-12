@@ -34,6 +34,13 @@ export const CandidateSchema = z.object({
   reason: z.string().nullable(),
   saturation_level: z.string().nullable().optional(),
   anomaly_flags: z.record(z.string(), z.boolean()).optional(),
+
+  // Google Ads resource name for the campaign's budget object — fetched at
+  // pipeline time so the executor can reference it directly instead of
+  // synthesising an invalid placeholder. Optional on the Candidate (not every
+  // skill knows the resource); persisted as `null` when omitted. The executor
+  // fail-closes if a budget mutate reaches it without this field set.
+  budget_resource_name: z.string().nullable().optional(),
 })
 export type Candidate = z.infer<typeof CandidateSchema>
 

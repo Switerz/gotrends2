@@ -443,5 +443,9 @@ function buildCandidate(
       (typeof row['primary_constraint'] === 'string'
         ? (row['primary_constraint'] as string)
         : null),
+    budget_resource_name:
+      typeof row['budget_resource_name'] === 'string'
+        ? row['budget_resource_name']
+        : null,
   }
 }
