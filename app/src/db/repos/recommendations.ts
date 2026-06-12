@@ -113,6 +113,44 @@ export class RecommendationsRepo {
   }
 
   /**
+   * Auto-expire unengaged recommendations older than `beforeIso`. Affects
+   * only `pending` and `sent_to_chat` — those are "no one acted on it yet"
+   * states. `approved`/`executing` are deliberately left alone: they carry
+   * human intent or in-flight mutation, and expiring them would mask bugs
+   * rather than surface them.
+   *
+   * Called by the pipeline at the start of each run so the subsequent
+   * dedup gate sees a fresh view. Returns the count of rows updated.
+   */
+  async expireStaleByAccount(
+    account_id: string,
+    beforeIso: string,
+  ): Promise<number> {
+    // Pre-count via SELECT * (the fakeDb only supports `SELECT *` shape;
+    // SQLite is happy with either). The UPDATE is what matters for state;
+    // we use the count for telemetry on the RunResult.
+    const { rows } = await this.db.query(
+      `SELECT * FROM recommendations
+       WHERE account_id = ?
+         AND status IN ('pending', 'sent_to_chat')
+         AND created_at < ?`,
+      [account_id, beforeIso],
+    )
+    const n = rows.length
+    if (n > 0) {
+      await this.db.exec(
+        `UPDATE recommendations
+         SET status = 'expired', updated_at = datetime('now')
+         WHERE account_id = ?
+           AND status IN ('pending', 'sent_to_chat')
+           AND created_at < ?`,
+        [account_id, beforeIso],
+      )
+    }
+    return n
+  }
+
+  /**
    * Find a non-terminal recommendation for (account_id, campaign_id), or null.
    *
    * "Non-terminal" = the rec can still be acted on (pending → sent_to_chat →

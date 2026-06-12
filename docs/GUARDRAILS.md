@@ -122,14 +122,33 @@ bidding_learning_phase_active — Smart Bidding ainda absorvendo a última mudan
 bidding_strategy_limited — campanha limitada por outro fator (budget/bid/quality)
 ```
 
-### 8. Dedup hot-state
+### 8. Sweep de stale (12h) — antes do dedup
+
+Implementado em `pipeline/runModels.ts` no **início** de cada run, antes
+de qualquer outra coisa.
+
+Recs em `pending` ou `sent_to_chat` com `created_at < now - 12h` são
+auto-expiradas (status vai para `expired`). Filosofia: se ninguém engajou
+em 12h, o sinal subjacente já mudou — vale gerar uma rec fresh, não
+preservar uma decisão velha.
+
+`approved` e `executing` **nunca** são varridos. Eles representam intenção
+humana ou mutação em curso; expirá-los mascararia bug em vez de revelar.
+
+Constante: `RECOMMENDATION_STALE_HOURS = 12` em `core/constants.ts`.
+
+Telemetria: contador `nExpiredStale` no `RunResult`. Valor não-zero é
+normal e saudável (operador rodou, sistema reciclou). Valor persistente
+alto sinaliza saturação da fila de aprovação no Chat.
+
+### 9. Dedup hot-state
 
 Implementado em `pipeline/runModels.ts` **antes** do `persistDecision`,
-não no refiner.
+depois do sweep de stale.
 
 Se já existe rec na mesma `(account_id, campaign_id)` com status em
-`{pending, sent_to_chat, approved, executing}`, o candidato é dropado
-com log estruturado:
+`{pending, sent_to_chat, approved, executing}` **e não-stale** (o sweep
+já tirou as antigas), o candidato é dropado com log estruturado:
 
 ```json
 { "event": "skipped_dedup_active_exists", "campaignId": "...", "activeRecommendationId": "...", "activeStatus": "sent_to_chat" }
@@ -152,7 +171,8 @@ Todas em `app/src/core/constants.ts`:
 | `CONFIDENCE_REVIEW_THRESHOLD` | `40` | needs_human_review |
 | `MAX_DAILY_TROAS_DRIFT` | `0.40` | soft cap diário, tROAS only |
 | `MAX_TROAS_DRIFT_7D` | `0.30` | soft cap 7d, tROAS only |
-| `RECOMMENDATION_TTL_HOURS` | `24` | expiração de pending |
+| `RECOMMENDATION_TTL_HOURS` | `24` | expiração default no rec.expires_at |
+| `RECOMMENDATION_STALE_HOURS` | `12` | sweep automático de pending/sent_to_chat |
 
 ## Por que tROAS e não budget nos caps cumulativos
 

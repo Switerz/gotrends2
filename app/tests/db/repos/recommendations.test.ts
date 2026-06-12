@@ -213,4 +213,84 @@ describe('RecommendationsRepo', () => {
       expect(got?.recommendation_id).toBe('pending-now')
     })
   })
+
+  describe('expireStaleByAccount', () => {
+    it('expires pending and sent_to_chat older than the cutoff', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      // Two stale recs (older than cutoff) — both must be swept
+      await repo.insert(baseRec({ recommendation_id: 'stale-pending', status: 'pending' }))
+      await repo.insert(baseRec({ recommendation_id: 'stale-sent', status: 'sent_to_chat' }))
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.created_at = '2026-06-11 00:00:00'
+      arr[1]!.created_at = '2026-06-11 00:00:00'
+      const n = await repo.expireStaleByAccount('7705857660', '2026-06-12 00:00:00')
+      expect(n).toBe(2)
+      const pending = await repo.getById('stale-pending')
+      const sent = await repo.getById('stale-sent')
+      expect(pending?.status).toBe('expired')
+      expect(sent?.status).toBe('expired')
+    })
+
+    it('does NOT expire fresh pending recs', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(baseRec({ recommendation_id: 'fresh', status: 'pending' }))
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.created_at = '2026-06-12 06:00:00' // newer than cutoff below
+      const n = await repo.expireStaleByAccount('7705857660', '2026-06-12 00:00:00')
+      expect(n).toBe(0)
+      const fresh = await repo.getById('fresh')
+      expect(fresh?.status).toBe('pending')
+    })
+
+    it('does NOT touch approved or executing recs even when stale', async () => {
+      // Approved/executing carry human intent or in-flight mutation. Sweeping
+      // them would mask bugs (e.g. stuck executor) rather than surface them.
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(baseRec({ recommendation_id: 'approved-stale', status: 'approved' }))
+      await repo.insert(baseRec({ recommendation_id: 'executing-stale', status: 'executing' }))
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.created_at = '2026-06-10 00:00:00'
+      arr[1]!.created_at = '2026-06-10 00:00:00'
+      const n = await repo.expireStaleByAccount('7705857660', '2026-06-12 00:00:00')
+      expect(n).toBe(0)
+      const approved = await repo.getById('approved-stale')
+      const executing = await repo.getById('executing-stale')
+      expect(approved?.status).toBe('approved')
+      expect(executing?.status).toBe('executing')
+    })
+
+    it('scoped by account_id — does not touch other accounts', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(
+        baseRec({ recommendation_id: 'ours', status: 'pending', account_id: 'acc-A' }),
+      )
+      await repo.insert(
+        baseRec({ recommendation_id: 'theirs', status: 'pending', account_id: 'acc-B' }),
+      )
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.created_at = '2026-06-11 00:00:00'
+      arr[1]!.created_at = '2026-06-11 00:00:00'
+      const n = await repo.expireStaleByAccount('acc-A', '2026-06-12 00:00:00')
+      expect(n).toBe(1)
+      expect((await repo.getById('ours'))?.status).toBe('expired')
+      expect((await repo.getById('theirs'))?.status).toBe('pending')
+    })
+
+    it('after expire, dedup gate releases the campaign for a new rec', async () => {
+      // End-to-end: stale rec → expire sweep → findActiveByCampaign returns null
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(baseRec({ recommendation_id: 'old', status: 'sent_to_chat' }))
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.created_at = '2026-06-11 00:00:00'
+
+      expect(await repo.findActiveByCampaign('7705857660', 'camp-1')).not.toBeNull()
+      await repo.expireStaleByAccount('7705857660', '2026-06-12 00:00:00')
+      expect(await repo.findActiveByCampaign('7705857660', 'camp-1')).toBeNull()
+    })
+  })
 })

@@ -24,6 +24,7 @@ import {
   classifyBiddingLearning,
   type BiddingLearningStatus,
 } from '@/agent/refiners/biddingLearning'
+import { RECOMMENDATION_STALE_HOURS } from '@/core/constants'
 import { uuid } from '@/lib/uuid'
 import { leftJoin } from '@/lib/df'
 import { buildBaselineTrendFeatures } from '@/models/baselineTrend'
@@ -57,6 +58,11 @@ export interface RunResult {
    *  a non-terminal rec for the same campaign already existed. Surfaces the
    *  dedup behaviour so operators can spot stuck queues at a glance. */
   nSkippedDedup: number
+  /** Stale recs (pending / sent_to_chat older than RECOMMENDATION_STALE_HOURS)
+   *  that this run auto-expired before the dedup gate. A non-zero value here
+   *  is normal — it shows that operator engagement decayed and we're cycling
+   *  fresh decisions. Persistent high counts hint at a saturated Chat queue. */
+  nExpiredStale: number
   errors: string[]
 }
 
@@ -102,6 +108,21 @@ export async function runModelsForAccount(
     )
     const settings = parseSettings(settingsRaw)
 
+    // Auto-expire unengaged recs older than the stale window BEFORE the
+    // dedup gate runs. This is what allows a fresh run to overwrite an
+    // ignored rec for the same campaign — the user's design call: "if it
+    // wasn't accepted in 12h, just generate again, no problem." See
+    // RECOMMENDATION_STALE_HOURS in core/constants.ts for the rationale on
+    // which statuses are swept (only pending + sent_to_chat).
+    const staleCutoffMs =
+      Date.parse(nowIso) - RECOMMENDATION_STALE_HOURS * 3600 * 1000
+    const staleCutoffIso = new Date(staleCutoffMs).toISOString()
+    const recsRepoForExpire = new RecommendationsRepo(db)
+    const nExpiredStale = await recsRepoForExpire.expireStaleByAccount(
+      opts.accountId,
+      staleCutoffIso,
+    )
+
     if (daily.length === 0) {
       await runs.updateStatus(runId, 'success', 0, 0)
       return {
@@ -110,6 +131,7 @@ export async function runModelsForAccount(
         nCampaignsScanned: 0,
         nRecommendations: 0,
         nSkippedDedup: 0,
+        nExpiredStale,
         errors,
       }
     }
@@ -148,7 +170,8 @@ export async function runModelsForAccount(
     let nRecs = 0
     let nSkippedDedup = 0
     const nScanned = constraints.length
-    const recsRepo = new RecommendationsRepo(db)
+    // Reuse the same repo instance the expire-sweep created.
+    const recsRepo = recsRepoForExpire
     for (const row of constraints) {
       try {
         const candidate = buildCandidate(row, opts.accountId)
@@ -195,6 +218,7 @@ export async function runModelsForAccount(
       nCampaignsScanned: nScanned,
       nRecommendations: nRecs,
       nSkippedDedup,
+      nExpiredStale,
       errors,
     }
   } catch (e) {
@@ -205,6 +229,7 @@ export async function runModelsForAccount(
       nCampaignsScanned: 0,
       nRecommendations: 0,
       nSkippedDedup: 0,
+      nExpiredStale: 0,
       errors: [(e as Error).message ?? String(e)],
     }
   }

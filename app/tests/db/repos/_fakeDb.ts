@@ -23,6 +23,14 @@ function evalLiteral(literal: string): unknown {
   if (/^datetime\('now'\)$/i.test(trimmed)) {
     return new Date().toISOString().replace('T', ' ').replace(/\..*$/, '')
   }
+  // Single-quoted string literal — strip the quotes.
+  if (/^'[^']*'$/.test(trimmed)) {
+    return trimmed.slice(1, -1)
+  }
+  // Numeric literal.
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return Number(trimmed)
+  }
   // Fallback: return as-is. Tests should never hit this path.
   return trimmed
 }
@@ -80,12 +88,15 @@ export function makeFakeDb(): FakeDb {
     }
 
     // ----- UPDATE -----
-    // Supports: UPDATE <t> SET col=?, col=<literal>, ... WHERE col = ?
+    // Supports compound WHERE clauses (same operator set as SELECT):
+    //   col = ? | col = 'literal' | col IS [NOT] NULL | col {<,<=,>,>=} ?|literal
+    //   col IN ('a','b',...)
+    // Joined by AND. SET is comma-separated col=? | col=<literal>.
     const updateMatch = sql.match(
-      /^UPDATE\s+(\w+)\s+SET\s+(.+?)\s+WHERE\s+(\w+)\s*=\s*\?$/i,
+      /^UPDATE\s+(\w+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/i,
     )
     if (updateMatch) {
-      const [, table, assignmentsRaw, whereCol] = updateMatch
+      const [, table, assignmentsRaw, whereRaw] = updateMatch
       const assignments = assignmentsRaw!.split(',').map((a) => a.trim())
       const setOps: Array<{ col: string; value: unknown }> = []
       let paramIdx = 0
@@ -100,11 +111,69 @@ export function makeFakeDb(): FakeDb {
           setOps.push({ col, value: evalLiteral(rhs) })
         }
       }
-      const whereVal = params[paramIdx]
+      // Reuse the same WHERE clause parsing shape as SELECT.
+      const clauses = whereRaw!.split(/\s+AND\s+/i).map((c) => c.trim())
+      type EqF = { kind: 'eq'; col: string; value: unknown }
+      type InF = { kind: 'in'; col: string; values: unknown[] }
+      type NullF = { kind: 'null'; col: string; negated: boolean }
+      type CmpF = { kind: 'cmp'; col: string; op: '<' | '<=' | '>' | '>='; value: unknown }
+      const filters: Array<EqF | InF | NullF | CmpF> = []
+      for (const c of clauses) {
+        const eq = c.match(/^(\w+)\s*=\s*(\?|'[^']*')$/)
+        if (eq) {
+          const rhs = eq[2]!
+          const v = rhs === '?' ? params[paramIdx++] : rhs.slice(1, -1)
+          filters.push({ kind: 'eq', col: eq[1]!, value: v })
+          continue
+        }
+        const nullCheck = c.match(/^(\w+)\s+IS\s+(NOT\s+)?NULL$/i)
+        if (nullCheck) {
+          filters.push({ kind: 'null', col: nullCheck[1]!, negated: Boolean(nullCheck[2]) })
+          continue
+        }
+        const cmp = c.match(/^(\w+)\s*(<=|>=|<|>)\s*(\?|'[^']*')$/)
+        if (cmp) {
+          const rhs = cmp[3]!
+          const v = rhs === '?' ? params[paramIdx++] : rhs.slice(1, -1)
+          filters.push({ kind: 'cmp', col: cmp[1]!, op: cmp[2]! as CmpF['op'], value: v })
+          continue
+        }
+        const inLit = c.match(/^(\w+)\s+IN\s*\(\s*(.+?)\s*\)$/i)
+        if (inLit) {
+          const values = inLit[2]!
+            .split(',')
+            .map((v) => v.trim().replace(/^['"]|['"]$/g, ''))
+          filters.push({ kind: 'in', col: inLit[1]!, values })
+          continue
+        }
+        throw new Error(`fakeDb.exec UPDATE: unsupported WHERE clause: ${c}`)
+      }
+      const matchRow = (row: Row): boolean =>
+        filters.every((f) => {
+          const cell = row[f.col]
+          switch (f.kind) {
+            case 'eq':
+              return cell === f.value
+            case 'null':
+              return f.negated ? cell !== null && cell !== undefined : cell === null || cell === undefined
+            case 'cmp': {
+              if (cell === null || cell === undefined) return false
+              const a = cell as string | number
+              const b = f.value as string | number
+              if (f.op === '<') return a < b
+              if (f.op === '<=') return a <= b
+              if (f.op === '>') return a > b
+              return a >= b
+            }
+            case 'in':
+              return f.values.includes(cell as string)
+          }
+        })
+
       const rows = ensure(table!)
       let written = 0
       for (const row of rows) {
-        if (row[whereCol!] === whereVal) {
+        if (matchRow(row)) {
           for (const op of setOps) row[op.col] = op.value
           written++
         }

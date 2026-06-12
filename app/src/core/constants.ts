@@ -6,6 +6,18 @@ export const PARITY_TOLERANCE = 1e-6
 /** Default expiration for a pending recommendation (hours). */
 export const RECOMMENDATION_TTL_HOURS = 24
 
+/**
+ * Window after which an unengaged recommendation (still in `pending` or
+ * `sent_to_chat`) is auto-expired by the next `run-models` sweep. The
+ * campaign's underlying signal has drifted; a fresh decision beats a stale
+ * one sitting on the operator's chat.
+ *
+ * `approved`/`executing` states are NEVER swept — they represent human
+ * intent or in-flight mutation, and expiring them would mask bugs (e.g.
+ * stuck executor) rather than surface them.
+ */
+export const RECOMMENDATION_STALE_HOURS = 12
+
 /** Hard limit on a single recommendation's change_percent magnitude. */
 export const MAX_ABS_CHANGE_PERCENT = 0.5
 
