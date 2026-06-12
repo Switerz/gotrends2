@@ -53,39 +53,42 @@ describe('requireIngestToken', () => {
 })
 
 describe('requireCronKey', () => {
-  it('returns 500 server_misconfigured if GODEPLOY_CRON_KEY env var is missing', async () => {
+  // The middleware does NOT validate the signature embedded in the
+  // X-Godeploy-Cron header — the value is a signed payload whose exact
+  // format is undocumented and unverifiable from our side. Presence of the
+  // header (which only the Godeploy edge can stamp) is what we trust.
+  // See middleware.ts docstring for the full rationale and threat model.
+
+  it('returns 403 forbidden when X-Godeploy-Cron header is missing', async () => {
     const fetcher = mountWith(requireCronKey, {})
     const res = await fetcher(new Request('http://x/protected'))
-    expect(res.status).toBe(500)
-    expect(await res.json()).toEqual({
-      error: 'server_misconfigured',
-      detail: 'GODEPLOY_CRON_KEY not set',
-    })
-  })
-
-  it('returns 403 forbidden when header is missing', async () => {
-    const fetcher = mountWith(requireCronKey, { GODEPLOY_CRON_KEY: 'cron-secret' })
-    const res = await fetcher(new Request('http://x/protected'))
     expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: 'forbidden' })
+    const body = (await res.json()) as { error: string; detail?: string }
+    expect(body.error).toBe('forbidden')
+    expect(body.detail).toMatch(/missing X-Godeploy-Cron/i)
   })
 
-  it('returns 403 forbidden when header is wrong', async () => {
-    const fetcher = mountWith(requireCronKey, { GODEPLOY_CRON_KEY: 'cron-secret' })
-    const res = await fetcher(
-      new Request('http://x/protected', { headers: { 'x-godeploy-cron': 'nope' } }),
-    )
-    expect(res.status).toBe(403)
-  })
-
-  it('passes through when header matches', async () => {
-    const fetcher = mountWith(requireCronKey, { GODEPLOY_CRON_KEY: 'cron-secret' })
+  it('passes through with ANY non-empty X-Godeploy-Cron value', async () => {
+    // The actual production value is `t=<unix_ts>;sig=<hex>`. We don't
+    // parse or verify; presence is sufficient.
+    const fetcher = mountWith(requireCronKey, {})
     const res = await fetcher(
       new Request('http://x/protected', {
-        headers: { 'x-godeploy-cron': 'cron-secret' },
+        headers: { 'x-godeploy-cron': 't=1781276400;sig=deadbeef' },
       }),
     )
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
+  })
+
+  it('accepts requests regardless of GODEPLOY_CRON_KEY env var state', async () => {
+    // No env binding required — the middleware is presence-only.
+    const fetcher = mountWith(requireCronKey, {})
+    const res = await fetcher(
+      new Request('http://x/protected', {
+        headers: { 'x-godeploy-cron': 'anything' },
+      }),
+    )
+    expect(res.status).toBe(200)
   })
 })

@@ -55,14 +55,21 @@ describe('cron auth (requireCronKey)', () => {
     expect(res.status).toBe(403)
   })
 
-  it('returns 403 when the X-Godeploy-Cron header is wrong', async () => {
+  // The middleware is presence-only: ANY non-empty X-Godeploy-Cron value is
+  // accepted. The header value is a signed payload whose exact format we
+  // intentionally do not verify — see middleware.ts docstring. The test
+  // below replaces the legacy "wrong value → 403" assertion.
+  it('accepts ANY non-empty X-Godeploy-Cron header value (presence-only auth)', async () => {
     const { env } = makeEnv()
     const res = await post(
       env,
-      { 'x-godeploy-cron': 'nope' },
+      { 'x-godeploy-cron': 't=1781276400;sig=deadbeef' },
       '/cron/run-models',
     )
-    expect(res.status).toBe(403)
+    // 403 would mean the middleware rejected — anything else means it
+    // passed and the route handler ran (200 skipped here because env has
+    // no Google Ads / Metabase creds).
+    expect(res.status).not.toBe(403)
   })
 })
 
