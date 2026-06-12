@@ -83,25 +83,38 @@ A query string filtra:
 - `date_min` / `date_max` → faixa inclusiva (YYYY-MM-DD)
 - `limit` (≤100) + `page` → cliente paginha até página curta
 
-**Campos relevantes na resposta:**
+**Campos relevantes na resposta** (validados contra a API real em 2026-06-12):
 
 ```ts
 {
-  id: number,
-  paid_at: string,          // ISO timestamp
-  totals: { total: number | string },  // BRL
-  metadata: {
-    data: [
-      { key: 'utm_source', value: 'google' },
-      { key: 'utm_campaign', value: 'brand-nb' },
-      ...
-    ]
-  }
+  id: 164823846,
+  created_at: { date: '2026-06-12 15:00:12.000000' },  // wrapped object
+  value_total: 201.43,                                  // BRL líquido (com desconto + frete)
+  value_products: 226.71,
+  value_discount: 37.18,
+  value_shipment: 11.9,
+
+  // UTMs aparecem TOP-LEVEL no order, não em metadata.data
+  utm_source: 'facebook',
+  utm_medium: 'paid',
+  utm_campaign: 'Conversão - Valor - CUPOM',
+  utm_term: '120221002675910393',
+  utm_content: 'video-creative-x'
 }
 ```
 
-O client (`clients/yampi.ts`) normaliza para um `YampiOrder` enxuto —
-o resto do código nunca toca a shape crua do Yampi.
+O client (`clients/yampi.ts`) normaliza para um `YampiOrder` enxuto:
+
+```ts
+interface YampiOrder {
+  id: number
+  createdAt: string | null  // raw created_at.date
+  totalBrl: number          // value_total
+  utm: { source, medium, campaign, term, content: string | null }
+}
+```
+
+O resto do código nunca toca a shape crua do Yampi — change-resilient.
 
 ## Próximo passo (não entregue neste commit)
 

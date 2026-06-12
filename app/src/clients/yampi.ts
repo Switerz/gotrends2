@@ -27,12 +27,19 @@ export interface YampiClientConfig {
 export interface YampiOrder {
   /** Yampi internal id. */
   id: number
-  /** ISO timestamp (UTC) the order entered `paid` status. */
-  paidAt: string | null
-  /** Total revenue captured for the order, in BRL. */
+  /** ISO datetime the order was created (`raw.created_at.date`, server tz).
+   *  Used by the pipeline to attribute revenue to a calendar day. The
+   *  `paid_at` field is not exposed top-level by the Yampi orders list
+   *  endpoint; created_at within `status_alias=paid` is a close enough
+   *  proxy and avoids a per-order transactions lookup. */
+  createdAt: string | null
+  /** `value_total` from the Yampi payload — the final figure paid by the
+   *  customer in BRL, net of discounts and including shipping. This is the
+   *  ground-truth revenue replacement for Google Ads `conversion_value`. */
   totalBrl: number
-  /** UTM tags pulled from the order metadata. Used by the pipeline to
-   *  join orders back to a Google Ads campaign. `null` if the metadata
+  /** UTM tags pulled from the order's top-level fields (Yampi exposes them
+   *  directly, not nested under `metadata`). Used by the pipeline to join
+   *  orders back to a Google Ads campaign. `null` when the order's URL
    *  didn't carry the tag (direct traffic, organic, missing utm_*, …). */
   utm: {
     source: string | null
@@ -94,11 +101,14 @@ export class YampiClient {
     // Yampi pagination: `?page=N&limit=M`. We stop on the first short page.
     // Capped at 50 pages to defend against an infinite loop on a bad API
     // response — 50 × 100 = 5000 orders per range, plenty for a daily run.
+    //
+    // No `include=...` needed: utm_* + value_total + created_at are all
+    // top-level fields in the default projection. Adding includes would
+    // bloat the payload with cart/items/customer/etc. that we don't use.
     for (; page <= 50; page++) {
       const url =
         `${BASE_URL}/${this.config.alias}/orders` +
-        `?include=metadata,transactions` +
-        `&status_alias=paid` +
+        `?status_alias=paid` +
         `&date_min=${encodeURIComponent(opts.fromDate)}` +
         `&date_max=${encodeURIComponent(opts.toDate)}` +
         `&limit=${limit}` +
@@ -129,51 +139,36 @@ interface YampiOrdersResponse {
 
 interface YampiOrderRaw {
   id?: number
-  paid_at?: string | null
-  /** Some Yampi accounts surface `total` as a number, others as a string —
-   *  the normaliser handles both. */
-  totals?: { total?: number | string | null } | null
-  metadata?: {
-    data?: Array<{
-      key?: string
-      value?: string | null
-    }>
-  } | null
+  /** Yampi wraps timestamps as { date, timezone, timezone_type }. We read
+   *  the `date` string only — the timezone field is "America/Sao_Paulo" on
+   *  every order we've seen so canonicalising costs no information. */
+  created_at?: { date?: string } | null
+  /** Final order total in BRL (net of discounts, including shipping).
+   *  Yampi sometimes ships this as a number, sometimes as a string. */
+  value_total?: number | string | null
+  /** UTM tags appear as top-level fields on the order, NOT nested inside
+   *  metadata. Confirmed against the live API on 2026-06-12. */
+  utm_source?: string | null
+  utm_medium?: string | null
+  utm_campaign?: string | null
+  utm_term?: string | null
+  utm_content?: string | null
 }
 
 function normaliseOrder(raw: YampiOrderRaw): YampiOrder {
-  const totalRaw = raw.totals?.total
+  const v = raw.value_total
   const total =
-    typeof totalRaw === 'number'
-      ? totalRaw
-      : typeof totalRaw === 'string'
-        ? Number(totalRaw)
-        : 0
+    typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : 0
   return {
     id: raw.id ?? 0,
-    paidAt: raw.paid_at ?? null,
+    createdAt: raw.created_at?.date ?? null,
     totalBrl: Number.isFinite(total) ? total : 0,
-    utm: extractUtm(raw.metadata?.data ?? []),
+    utm: {
+      source: raw.utm_source ?? null,
+      medium: raw.utm_medium ?? null,
+      campaign: raw.utm_campaign ?? null,
+      term: raw.utm_term ?? null,
+      content: raw.utm_content ?? null,
+    },
   }
-}
-
-/** Extract utm_* tags from the metadata list (key/value pairs). */
-function extractUtm(items: Array<{ key?: string; value?: string | null }>): YampiOrder['utm'] {
-  const out: YampiOrder['utm'] = {
-    source: null,
-    medium: null,
-    campaign: null,
-    term: null,
-    content: null,
-  }
-  for (const item of items) {
-    const k = (item.key ?? '').toLowerCase()
-    const v = item.value ?? null
-    if (k === 'utm_source') out.source = v
-    else if (k === 'utm_medium') out.medium = v
-    else if (k === 'utm_campaign') out.campaign = v
-    else if (k === 'utm_term') out.term = v
-    else if (k === 'utm_content') out.content = v
-  }
-  return out
 }
