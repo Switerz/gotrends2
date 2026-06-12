@@ -6,13 +6,34 @@ import { SWRConfig } from 'swr'
 import Dashboard from '~/pages/Dashboard'
 import { AppShell } from '~/components/layout/AppShell'
 
+// Mock matrix: list endpoints return [], stats endpoint returns an empty
+// snapshot. Without the latter, ApprovalRatesTile's `data.byStatus` access
+// crashes — kept here so every Dashboard test inherits the safe default.
+const EMPTY_STATS = {
+  windowDays: 7,
+  windowStart: '2026-06-05T00:00:00.000Z',
+  totals: { total: 0, decided: 0, executed: 0 },
+  byStatus: {
+    pending: 0,
+    sent_to_chat: 0,
+    approved: 0,
+    executing: 0,
+    executed: 0,
+    failed: 0,
+    rejected: 0,
+    expired: 0,
+  },
+  rates: { approvalRate: null, engagementRate: null, executionSuccessRate: null },
+}
+
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
-    vi.fn().mockResolvedValue({
+    vi.fn().mockImplementation(async (url: string) => ({
       ok: true,
-      json: async () => [],
-    }),
+      json: async () =>
+        url.includes('/recommendations/stats') ? EMPTY_STATS : [],
+    })),
   )
 })
 
@@ -43,7 +64,11 @@ describe('Dashboard page', () => {
       'fetch',
       vi.fn().mockImplementation(async (url: string) => ({
         ok: true,
-        json: async () => (url.includes('/recommendations') ? recs : []),
+        json: async () => {
+          if (url.includes('/recommendations/stats')) return EMPTY_STATS
+          if (url.includes('/recommendations')) return recs
+          return []
+        },
       })),
     )
     render(

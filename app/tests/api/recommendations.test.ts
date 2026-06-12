@@ -21,6 +21,10 @@ function makeEnv(seed: {
   recommendations?: Row[]
   accounts?: Row[]
   executions?: Row[]
+  /** When provided, the countByStatusSince query returns these aggregates
+   *  verbatim instead of inferring from `recommendations`. Lets a stats
+   *  test pin specific counts without seeding 100 recs. */
+  statsCounts?: Map<string, number>
 }): Env {
   const recs = seed.recommendations ?? []
   const accs = seed.accounts ?? []
@@ -64,6 +68,28 @@ function makeEnv(seed: {
         const id = params[0]
         const row = accs.find((a) => a['account_id'] === id)
         return materialize(row ? [row] : [])
+      }
+
+      // recommendations countByStatusSince
+      m = norm.match(/^SELECT status, COUNT\(\*\) AS n FROM recommendations WHERE created_at >= \? GROUP BY status$/i)
+      if (m) {
+        const counts =
+          seed.statsCounts ??
+          new Map(
+            // Default: derive from the recommendations seed.
+            Array.from(
+              recs.reduce<Map<string, number>>((acc, r) => {
+                const s = String(r['status'] ?? '')
+                acc.set(s, (acc.get(s) ?? 0) + 1)
+                return acc
+              }, new Map()),
+            ),
+          )
+        const rows: Row[] = Array.from(counts.entries()).map(([status, n]) => ({
+          status,
+          n,
+        }))
+        return materialize(rows)
       }
 
       // executions findLatestVerifiedByRecommendationIds (IN literal list)
@@ -158,6 +184,81 @@ describe('GET /api/recommendations', () => {
     const { status, body } = await fetchJson(env, '/api/recommendations')
     expect(status).toBe(200)
     expect(body).toEqual([])
+  })
+
+  describe('GET /api/recommendations/stats', () => {
+    it('returns the totals + byStatus + rates for the default 7d window', async () => {
+      // Synthetic 7d snapshot: 40 generated, 30 decided (20 approved family,
+      // 10 rejected), 18 executed, 2 failed.
+      const env = makeEnv({
+        statsCounts: new Map([
+          ['pending', 3],
+          ['sent_to_chat', 5],
+          ['approved', 0],
+          ['executing', 0],
+          ['executed', 18],
+          ['failed', 2],
+          ['rejected', 10],
+          ['expired', 2],
+        ]),
+      })
+      const { status, body } = await fetchJson(env, '/api/recommendations/stats')
+      expect(status).toBe(200)
+      const stats = body as {
+        windowDays: number
+        totals: { total: number; decided: number; executed: number }
+        byStatus: Record<string, number>
+        rates: {
+          approvalRate: number | null
+          engagementRate: number | null
+          executionSuccessRate: number | null
+        }
+      }
+      expect(stats.windowDays).toBe(7)
+      expect(stats.totals.total).toBe(40)
+      // decided = approved family (0+0+18+2=20) + rejected (10) = 30
+      expect(stats.totals.decided).toBe(30)
+      expect(stats.totals.executed).toBe(18)
+      // approval = 20 / 30 = 66.7%
+      expect(stats.rates.approvalRate).toBeCloseTo(66.7, 1)
+      // engagement = 30 / 40 = 75.0%
+      expect(stats.rates.engagementRate).toBeCloseTo(75.0, 1)
+      // execution success = 18 / (18 + 2) = 90.0%
+      expect(stats.rates.executionSuccessRate).toBeCloseTo(90.0, 1)
+    })
+
+    it('honours a custom days param (?days=14)', async () => {
+      const env = makeEnv({ statsCounts: new Map([['executed', 1]]) })
+      const { body } = await fetchJson(env, '/api/recommendations/stats?days=14')
+      expect((body as { windowDays: number }).windowDays).toBe(14)
+    })
+
+    it('clamps days to [1, 90]', async () => {
+      const env = makeEnv({ statsCounts: new Map() })
+      const tooLow = await fetchJson(env, '/api/recommendations/stats?days=0')
+      const tooHigh = await fetchJson(env, '/api/recommendations/stats?days=9999')
+      expect((tooLow.body as { windowDays: number }).windowDays).toBe(1)
+      expect((tooHigh.body as { windowDays: number }).windowDays).toBe(90)
+    })
+
+    it('rates are null when their denominator is zero (no division-by-zero noise)', async () => {
+      const env = makeEnv({ statsCounts: new Map() }) // empty window
+      const { body } = await fetchJson(env, '/api/recommendations/stats')
+      const stats = body as { rates: { approvalRate: null; engagementRate: null; executionSuccessRate: null } }
+      expect(stats.rates.approvalRate).toBeNull()
+      expect(stats.rates.engagementRate).toBeNull()
+      expect(stats.rates.executionSuccessRate).toBeNull()
+    })
+
+    it('requires session auth (no cookie → 401)', async () => {
+      const env = makeEnv({})
+      const res = await worker.fetch(
+        new Request('http://x/api/recommendations/stats'),
+        env,
+        {} as ExecutionContext,
+      )
+      expect(res.status).toBe(401)
+    })
   })
 
   it('decorates listing rows with verification when a verified execution exists', async () => {

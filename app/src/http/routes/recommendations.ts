@@ -40,6 +40,64 @@ import { uuid } from '@/lib/uuid'
 export const recsRouter = new Hono<{ Bindings: Env; Variables: SessionVars }>()
 recsRouter.use('*', requireSession)
 
+// GET /api/recommendations/stats?days=7
+//
+// Operator-facing approval analytics. Returns:
+//   - byStatus     count per workflow status in the window
+//   - totals       total recs + decided + executed (derived)
+//   - rates        approvalRate, engagementRate, executionSuccessRate
+//
+// Defined BEFORE /:id so the static path doesn't get caught as an id.
+recsRouter.get('/stats', async (c) => {
+  const repo = new RecommendationsRepo(c.env.DB)
+  const daysRaw = c.req.query('days')
+  const days = daysRaw ? Math.max(1, Math.min(90, Number(daysRaw))) : 7
+  const afterIso = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString()
+
+  const counts = await repo.countByStatusSince(afterIso)
+  const byStatus = {
+    pending: counts.get('pending') ?? 0,
+    sent_to_chat: counts.get('sent_to_chat') ?? 0,
+    approved: counts.get('approved') ?? 0,
+    executing: counts.get('executing') ?? 0,
+    executed: counts.get('executed') ?? 0,
+    failed: counts.get('failed') ?? 0,
+    rejected: counts.get('rejected') ?? 0,
+    expired: counts.get('expired') ?? 0,
+  }
+  const total = Object.values(byStatus).reduce((a, b) => a + b, 0)
+  // approved counts the "operator said yes" intent — includes anything that
+  // moved past approved (executing/executed/failed) plus the still-approved.
+  const approvedFamily =
+    byStatus.approved + byStatus.executing + byStatus.executed + byStatus.failed
+  const decided = approvedFamily + byStatus.rejected
+
+  const ratePct = (numer: number, denom: number): number | null =>
+    denom === 0 ? null : Math.round((numer / denom) * 1000) / 10
+
+  return c.json({
+    windowDays: days,
+    windowStart: afterIso,
+    totals: {
+      total,
+      decided,
+      executed: byStatus.executed,
+    },
+    byStatus,
+    rates: {
+      // % of decided recs the operator approved
+      approvalRate: ratePct(approvedFamily, decided),
+      // % of all recs the operator engaged with (any approve/reject)
+      engagementRate: ratePct(decided, total),
+      // % of approved recs that actually executed cleanly
+      executionSuccessRate: ratePct(
+        byStatus.executed,
+        byStatus.executed + byStatus.failed,
+      ),
+    },
+  })
+})
+
 // GET /api/recommendations?status=pending&limit=100
 recsRouter.get('/', async (c) => {
   const repo = new RecommendationsRepo(c.env.DB)

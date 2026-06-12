@@ -104,6 +104,35 @@ export class RecommendationsRepo {
     return mapRows<RecommendationRow>(columns, rows)
   }
 
+  /**
+   * Aggregate count per status across recs created on or after `afterIso`.
+   * Returns a Map<status, count>; statuses with zero rows are absent.
+   *
+   * Single GROUP BY query — cheap for any window size we care about.
+   */
+  async countByStatusSince(afterIso: string): Promise<Map<string, number>> {
+    const { columns, rows } = await this.db.query(
+      `SELECT status, COUNT(*) AS n FROM recommendations
+       WHERE created_at >= ?
+       GROUP BY status`,
+      [afterIso],
+    )
+    const idxStatus = columns.indexOf('status')
+    const idxN = columns.indexOf('n')
+    const out = new Map<string, number>()
+    for (const r of rows) {
+      const row = r as unknown[] | Record<string, unknown>
+      const status = Array.isArray(row)
+        ? String(row[idxStatus] ?? '')
+        : String((row as Record<string, unknown>)['status'] ?? '')
+      const n = Array.isArray(row)
+        ? Number(row[idxN] ?? 0)
+        : Number((row as Record<string, unknown>)['n'] ?? 0)
+      if (status) out.set(status, n)
+    }
+    return out
+  }
+
   async listRecent(limit = 100): Promise<RecommendationRow[]> {
     const { columns, rows } = await this.db.query(
       `SELECT * FROM recommendations ORDER BY created_at DESC LIMIT ?`,
