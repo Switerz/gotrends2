@@ -328,7 +328,112 @@ function RecommendationDetailView({ id }: { id: string | undefined }) {
  * Full-screen pane rendered while the SPA is processing a Google Chat
  * Approve / Reject openLink click. Driven entirely by the URL's ?action= and
  * the parent's effect; this component is purely presentational.
+ *
+ * The approval has two phases the user perceives as one:
+ *   1. POST /api/recommendations/:id/(approve|reject) — recorded synchronously
+ *   2. fire-and-forget POST /api/execute/:id           — runs in background
+ * On approve we show a 3-step indicator so the wait feels intentional;
+ * on reject the second/third steps are skipped.
  */
+
+const APPROVE_STEPS = [
+  { key: 'record', label: 'Registrando decisão', detail: 'Salvando no audit trail' },
+  { key: 'guardrail', label: 'Validando guardrails', detail: 'Limites de mudança e risco' },
+  { key: 'apply', label: 'Enviando ao Google Ads', detail: 'Aplicando em background' },
+] as const
+
+const REJECT_STEPS = [
+  { key: 'record', label: 'Registrando rejeição', detail: 'Salvando no audit trail' },
+] as const
+
+function useStepProgress(running: boolean, total: number) {
+  // Walks a fake step cursor while we wait for the POST. The backend doesn't
+  // emit progress events, so the wizard simulates 1 step / ~800ms — fast
+  // enough to feel responsive, slow enough to read. Capped at total-1 so the
+  // last tick lands exactly on success.
+  const [step, setStep] = useState(0)
+  useEffect(() => {
+    if (!running) return
+    setStep(0)
+    const id = setInterval(() => {
+      setStep((s) => (s < total - 1 ? s + 1 : s))
+    }, 800)
+    return () => clearInterval(id)
+  }, [running, total])
+  return step
+}
+
+function useCloseCountdown(active: boolean, seconds: number) {
+  const [remaining, setRemaining] = useState(seconds)
+  useEffect(() => {
+    if (!active) return
+    setRemaining(seconds)
+    const id = setInterval(() => {
+      setRemaining((r) => (r > 0 ? r - 1 : 0))
+    }, 1000)
+    return () => clearInterval(id)
+  }, [active, seconds])
+  return remaining
+}
+
+function CheckIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M3.5 8.5L6.5 11.5L12.5 5.5"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  )
+}
+
+function StepRow({
+  state,
+  label,
+  detail,
+}: {
+  state: 'done' | 'active' | 'pending'
+  label: string
+  detail: string
+}) {
+  return (
+    <li className="flex items-start gap-3 py-1">
+      <span
+        className={`mt-[2px] flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition-colors duration-300 ${
+          state === 'done'
+            ? 'bg-sage text-ink-900'
+            : state === 'active'
+              ? 'bg-ink-700 text-ink-100'
+              : 'bg-ink-700/40 text-ink-400'
+        }`}
+        aria-hidden="true"
+      >
+        {state === 'done' ? (
+          <CheckIcon size={12} />
+        ) : state === 'active' ? (
+          <Spinner size={12} />
+        ) : (
+          <span className="block h-1 w-1 rounded-full bg-current" />
+        )}
+      </span>
+      <span className="flex flex-col">
+        <span
+          className={`text-sm leading-5 transition-colors ${
+            state === 'pending' ? 'text-ink-400' : 'text-ink-100'
+          }`}
+        >
+          {label}
+        </span>
+        <span className="text-[11px] font-mono text-ink-400">{detail}</span>
+      </span>
+    </li>
+  )
+}
+
 function AutoActionPane({
   action,
   status,
@@ -338,45 +443,93 @@ function AutoActionPane({
   status: AutoActionStatus
   error: string | null
 }) {
-  const verbRunning = action === 'approve' ? 'Aprovando' : 'Rejeitando'
-  const verbDone = action === 'approve' ? 'Aprovada' : 'Rejeitada'
+  const steps = action === 'approve' ? APPROVE_STEPS : REJECT_STEPS
+  const activeStep = useStepProgress(status === 'running', steps.length)
+  const closeIn = useCloseCountdown(status === 'success', 3)
+  const verbProgress = action === 'approve' ? 'Aprovando recomendação' : 'Rejeitando recomendação'
+  const verbDone = action === 'approve' ? 'Recomendação aprovada' : 'Recomendação rejeitada'
+  const successDetail =
+    action === 'approve'
+      ? 'A mudança está sendo enviada ao Google Ads em background. Você pode acompanhar o status na tela de detalhes.'
+      : 'A recomendação foi marcada como rejeitada. Nenhuma alteração será aplicada.'
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-ink-900 text-ink-100 px-6">
-      <div className="hairline rounded-card bg-ink-800 p-10 max-w-md text-center">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-ink-900 via-ink-900 to-ink-800 text-ink-100 px-6">
+      <div
+        className="hairline rounded-card bg-ink-800/80 backdrop-blur-sm shadow-soft-lift p-10 max-w-md w-full"
+        role="status"
+        aria-live="polite"
+      >
         {status === 'running' && (
-          <>
-            <div className="animate-pulse text-ink-300 font-mono text-xs uppercase tracking-[0.12em] mb-3">
-              {verbRunning}…
+          <div className="flex flex-col gap-6">
+            <div className="flex items-center gap-3">
+              <Spinner size={18} />
+              <div className="font-display text-xl text-ink-100">{verbProgress}…</div>
             </div>
-            <div className="font-display text-3xl">⏳</div>
-          </>
+            <ul className="flex flex-col gap-1">
+              {steps.map((s, i) => (
+                <StepRow
+                  key={s.key}
+                  state={i < activeStep ? 'done' : i === activeStep ? 'active' : 'pending'}
+                  label={s.label}
+                  detail={s.detail}
+                />
+              ))}
+            </ul>
+          </div>
         )}
+
         {status === 'success' && (
-          <>
-            <div className="font-display text-3xl mb-2">Recomendação {verbDone}</div>
-            <p className="text-sm text-ink-300 mb-3">Pode fechar esta aba.</p>
-            <p className="text-[10px] text-ink-400 font-mono uppercase tracking-[0.08em]">
-              Esta aba se fechará automaticamente em instantes
+          <div className="flex flex-col items-center text-center gap-3 animate-in fade-in">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-sage text-ink-900">
+              <CheckIcon size={22} />
+            </span>
+            <div className="font-display text-2xl">{verbDone}</div>
+            <p className="text-sm text-ink-300 leading-relaxed">{successDetail}</p>
+            <p className="mt-2 text-[10px] font-mono uppercase tracking-[0.08em] text-ink-400">
+              {closeIn > 0
+                ? `Fechando em ${closeIn}s`
+                : 'Pode fechar esta aba'}
             </p>
-          </>
+          </div>
         )}
+
         {status === 'error' && (
-          <>
-            <div className="font-display text-2xl mb-2 text-coral">
-              Não foi possível processar
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <span
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-coral-wash text-coral font-display text-lg"
+                aria-hidden="true"
+              >
+                !
+              </span>
+              <div className="font-display text-xl text-coral">Não foi possível processar</div>
             </div>
-            <p className="text-sm text-ink-300 mb-3">{error ?? 'erro desconhecido'}</p>
-            <button
-              type="button"
-              onClick={() => window.close()}
-              className="px-4 py-2 bg-ink-700 hairline rounded-[5px] text-sm hover:bg-ink-600"
-            >
-              Fechar
-            </button>
-          </>
+            <p className="text-sm text-ink-300 leading-relaxed">
+              {error ?? 'Erro desconhecido. Tente novamente em alguns instantes.'}
+            </p>
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-sage text-ink-900 rounded-[5px] text-sm font-medium hover:bg-sage/90"
+              >
+                Tentar novamente
+              </button>
+              <button
+                type="button"
+                onClick={() => window.close()}
+                className="px-4 py-2 bg-ink-700 hairline rounded-[5px] text-sm hover:bg-ink-600"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
         )}
+
         {status === 'idle' && (
-          <div className="text-ink-300 font-mono text-xs uppercase tracking-[0.12em]">
+          <div className="flex items-center gap-3 text-ink-300 font-mono text-xs uppercase tracking-[0.12em]">
+            <Spinner size={12} />
             Preparando…
           </div>
         )}
