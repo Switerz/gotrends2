@@ -369,7 +369,7 @@ function AutoActionPane({
             <button
               type="button"
               onClick={() => window.close()}
-              className="px-4 py-2 bg-ink-700 hairline rounded-card text-sm hover:bg-ink-600"
+              className="px-4 py-2 bg-ink-700 hairline rounded-[5px] text-sm hover:bg-ink-600"
             >
               Fechar
             </button>
