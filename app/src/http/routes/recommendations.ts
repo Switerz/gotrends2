@@ -44,6 +44,7 @@ recsRouter.use('*', requireSession)
 recsRouter.get('/', async (c) => {
   const repo = new RecommendationsRepo(c.env.DB)
   const accountsRepo = new AccountsRepo(c.env.DB)
+  const execsRepo = new ExecutionsRepo(c.env.DB)
   const status = c.req.query('status') as RecommendationStatus | undefined
   const limitRaw = c.req.query('limit')
   const limit = limitRaw ? Math.max(1, Math.min(500, Number(limitRaw))) : 100
@@ -59,7 +60,27 @@ recsRouter.get('/', async (c) => {
     const acc = await accountsRepo.get(id)
     labelMap.set(id, acc?.account_label ?? null)
   }
-  return c.json(rows.map((r) => toRecommendationDTO(r, labelMap.get(r.account_id))))
+
+  // Batch-fetch the latest verified execution per rec. One query, then a
+  // hash lookup per row when building the DTOs — no N+1.
+  const verifiedByRec = await execsRepo.findLatestVerifiedByRecommendationIds(
+    rows.map((r) => r.recommendation_id),
+  )
+
+  return c.json(
+    rows.map((r) => {
+      const dto = toRecommendationDTO(r, labelMap.get(r.account_id))
+      const verified = verifiedByRec.get(r.recommendation_id)
+      if (verified && verified.verification_status) {
+        dto.verification = {
+          status: verified.verification_status,
+          observedValue: verified.verified_value,
+          verifiedAt: verified.verified_at!,
+        }
+      }
+      return dto
+    }),
+  )
 })
 
 // GET /api/recommendations/:id

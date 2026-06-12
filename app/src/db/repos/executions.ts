@@ -73,6 +73,42 @@ export class ExecutionsRepo {
     return mapRows<ExecutionRow>(columns, rows)
   }
 
+  /**
+   * Latest *verified* execution per recommendation_id, across a list of
+   * rec ids. Returns a Map keyed by recommendation_id; recs without any
+   * verified execution are simply absent.
+   *
+   * Used by the listing endpoint so it can decorate each row with the
+   * verification badge without N+1 queries. Single SELECT scans the
+   * executions table once filtered by IN (...).
+   */
+  async findLatestVerifiedByRecommendationIds(
+    recommendation_ids: readonly string[],
+  ): Promise<Map<string, ExecutionRow>> {
+    if (recommendation_ids.length === 0) return new Map()
+    // Inline the IDs into the IN clause: rec ids are server-generated UUIDs
+    // (see `lib/uuid.ts`), so this is safe from SQL injection. We strip
+    // anything that isn't a UUID for defence-in-depth.
+    const safe = recommendation_ids
+      .filter((id) => /^[0-9a-fA-F-]{30,40}$/.test(id))
+      .map((id) => `'${id}'`)
+    if (safe.length === 0) return new Map()
+    const { columns, rows } = await this.db.query(
+      `SELECT * FROM executions
+       WHERE verified_at IS NOT NULL
+         AND recommendation_id IN (${safe.join(',')})
+       ORDER BY verified_at DESC`,
+      [],
+    )
+    const all = mapRows<ExecutionRow>(columns, rows)
+    const out = new Map<string, ExecutionRow>()
+    for (const e of all) {
+      // ORDER BY verified_at DESC, so the first occurrence per rec is the latest.
+      if (!out.has(e.recommendation_id)) out.set(e.recommendation_id, e)
+    }
+    return out
+  }
+
   async listByStatus(status: string, limit = 50): Promise<ExecutionRow[]> {
     const { columns, rows } = await this.db.query(
       `SELECT * FROM executions WHERE status = ? ORDER BY created_at DESC LIMIT ?`,

@@ -20,9 +20,11 @@ interface Row {
 function makeEnv(seed: {
   recommendations?: Row[]
   accounts?: Row[]
+  executions?: Row[]
 }): Env {
   const recs = seed.recommendations ?? []
   const accs = seed.accounts ?? []
+  const execs = seed.executions ?? []
 
   const db: GodeployDB = {
     async exec() {
@@ -62,6 +64,23 @@ function makeEnv(seed: {
         const id = params[0]
         const row = accs.find((a) => a['account_id'] === id)
         return materialize(row ? [row] : [])
+      }
+
+      // executions findLatestVerifiedByRecommendationIds (IN literal list)
+      m = norm.match(
+        /^SELECT \* FROM executions WHERE verified_at IS NOT NULL AND recommendation_id IN \(([^)]+)\) ORDER BY verified_at DESC$/i,
+      )
+      if (m) {
+        const idList = m[1]!
+          .split(',')
+          .map((s) => s.trim().replace(/^'|'$/g, ''))
+        const ids = new Set(idList)
+        const matched = execs
+          .filter((e) => e['verified_at'] != null && ids.has(String(e['recommendation_id'])))
+          .sort((a, b) =>
+            String(a['verified_at']) < String(b['verified_at']) ? 1 : -1,
+          )
+        return materialize(matched)
       }
 
       return { columns: [], rows: [], rowsRead: 0 }
@@ -139,6 +158,47 @@ describe('GET /api/recommendations', () => {
     const { status, body } = await fetchJson(env, '/api/recommendations')
     expect(status).toBe(200)
     expect(body).toEqual([])
+  })
+
+  it('decorates listing rows with verification when a verified execution exists', async () => {
+    const env = makeEnv({
+      recommendations: [
+        makeRec({ recommendation_id: '11111111-1111-4111-8111-111111111111', status: 'executed' }),
+        makeRec({ recommendation_id: '22222222-2222-4222-8222-222222222222', status: 'pending' }),
+      ],
+      accounts: [{ account_id: 'acc-1', account_label: 'Apice' }],
+      executions: [
+        {
+          execution_id: 'exec-1',
+          recommendation_id: '11111111-1111-4111-8111-111111111111',
+          verified_at: '2026-06-12T14:00:00Z',
+          verification_status: 'match',
+          verified_value: 5.5,
+        },
+      ],
+    })
+    const { body } = await fetchJson(env, '/api/recommendations')
+    const list = body as Array<{ id: string; verification?: { status: string; observedValue: number; verifiedAt: string } | null }>
+    const verifiedRec = list.find((r) => r.id === '11111111-1111-4111-8111-111111111111')
+    expect(verifiedRec?.verification).toEqual({
+      status: 'match',
+      observedValue: 5.5,
+      verifiedAt: '2026-06-12T14:00:00Z',
+    })
+    // The pending one has no verification — field absent.
+    const pendingRec = list.find((r) => r.id === '22222222-2222-4222-8222-222222222222')
+    expect(pendingRec?.verification).toBeUndefined()
+  })
+
+  it('listing rows have NO verification field when no executions have been verified', async () => {
+    const env = makeEnv({
+      recommendations: [makeRec({ recommendation_id: '33333333-3333-4333-8333-333333333333' })],
+      accounts: [{ account_id: 'acc-1', account_label: 'Apice' }],
+      // No executions seeded
+    })
+    const { body } = await fetchJson(env, '/api/recommendations')
+    const list = body as Array<{ verification?: unknown }>
+    expect(list[0]!.verification).toBeUndefined()
   })
 
   it('filters by ?status=pending', async () => {

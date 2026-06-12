@@ -2,7 +2,13 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useRecommendations } from '~/hooks/useRecommendations'
 import { Card, CardBody } from '~/components/ui/Card'
-import { Badge, guardrailTone, statusTone } from '~/components/ui/Badge'
+import {
+  Badge,
+  guardrailTone,
+  statusTone,
+  verificationLabel,
+  verificationTone,
+} from '~/components/ui/Badge'
 import { Table, THead, TBody, TR, TH, TD } from '~/components/ui/Table'
 import { Select, Input } from '~/components/ui/Form'
 import { EmptyState } from '~/components/ui/EmptyState'
@@ -150,6 +156,7 @@ export default function Recommendations() {
                   <TH>Confiança</TH>
                   <TH>Guardrail</TH>
                   <TH>Status</TH>
+                  <TH>Verificação</TH>
                   <TH>Criada</TH>
                 </tr>
               </THead>
@@ -189,6 +196,15 @@ export default function Recommendations() {
                     </TD>
                     <TD>
                       <Badge tone={statusTone(r.status)}>{r.status}</Badge>
+                    </TD>
+                    <TD>
+                      {r.verification ? (
+                        <Badge tone={verificationTone(r.verification.status)}>
+                          {verificationLabel(r.verification.status)}
+                        </Badge>
+                      ) : (
+                        <span className="text-ink-400 text-xs">—</span>
+                      )}
                     </TD>
                     <TD className="text-ink-300 text-xs">{fmtRelative(r.createdAt)}</TD>
                   </TR>
