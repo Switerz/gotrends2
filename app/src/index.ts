@@ -47,6 +47,11 @@ export interface Env {
   GOOGLE_OAUTH_CLIENT_SECRET?: string
   ALLOWED_EMAIL_DOMAIN?: string
   APP_ORIGIN?: string
+  // Per-account revenue source credentials. See config/revenueSources.ts
+  // for which account uses which env var. Adding a new account = new pair
+  // of envs + entry in the config map. Never hardcode the values here.
+  YAMPI_APICE_USER_TOKEN?: string
+  YAMPI_APICE_USER_SECRET_KEY?: string
 }
 
 let bootstrapped = false
