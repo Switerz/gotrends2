@@ -13,6 +13,20 @@ export interface RecommendationCardInput {
   confidence: number | null
   risk: string | null
   guardrailStatus: 'ok' | 'needs_human_review' | 'blocked'
+  /**
+   * Cumulative tROAS drift snapshot for the campaign at card-build time.
+   * Renders an extra widget showing consumption against both caps so the
+   * operator can decide from the Chat without opening the SPA. Omit for
+   * non-tROAS actions or when the snapshot is unavailable — the widget
+   * is then not rendered, no placeholder noise.
+   */
+  troasDrift?: {
+    todayPct: number
+    sevenDayPct: number
+    dailyCapPct: number
+    sevenDayCapPct: number
+    proposedDeltaPct: number
+  } | null
 }
 
 // PT-BR labels surfaced on the card. Unknown values fall through so a new
@@ -62,6 +76,41 @@ function fmtPct(v: number | null): string {
 }
 
 /**
+ * Render the tROAS cap consumption in a compact single line. The Chat card
+ * widget has no native progress bar, so we encode the state in text +
+ * symbols the operator can read at a glance:
+ *
+ *   `🟢 Hoje 12% + 5% / 40%  ·  🟡 7d 27% + 5% / 30%`
+ *
+ * Symbol coding (per cap independently):
+ *   🟢  consumed + proposed ≤ 70 % of cap        — safe
+ *   🟡  70 % < total ≤ 100 % of cap              — careful
+ *   🔴  total > cap                              — would breach
+ */
+function formatCapsConsumption(d: {
+  todayPct: number
+  sevenDayPct: number
+  dailyCapPct: number
+  sevenDayCapPct: number
+  proposedDeltaPct: number
+}): string {
+  const dailyTotal = d.todayPct + d.proposedDeltaPct
+  const sevenTotal = d.sevenDayPct + d.proposedDeltaPct
+  const pct = (v: number): string => `${(v * 100).toFixed(0)}%`
+  return (
+    `${capDot(dailyTotal, d.dailyCapPct)} Hoje ${pct(d.todayPct)} + ${pct(d.proposedDeltaPct)} / ${pct(d.dailyCapPct)}` +
+    `  ·  ` +
+    `${capDot(sevenTotal, d.sevenDayCapPct)} 7d ${pct(d.sevenDayPct)} + ${pct(d.proposedDeltaPct)} / ${pct(d.sevenDayCapPct)}`
+  )
+}
+
+function capDot(total: number, cap: number): string {
+  if (total > cap) return '🔴'
+  if (total > cap * 0.7) return '🟡'
+  return '🟢'
+}
+
+/**
  * Build a Google Chat card v2 payload for a recommendation. The Approve /
  * Reject buttons use `openLink` rather than `action.function` because the
  * card is posted via the space's incoming webhook URL — Google Chat doesn't
@@ -92,6 +141,16 @@ export function buildRecommendationCard(i: RecommendationCardInput, appOrigin: s
             { decoratedText: { topLabel: 'Confiança', text: i.confidence !== null ? String(i.confidence) : '—' } },
             { decoratedText: { topLabel: 'Risco', text: i.risk ? (RISK_LABELS[i.risk] ?? i.risk) : '—' } },
             { decoratedText: { topLabel: 'Guardrail', text: GUARDRAIL_LABELS[i.guardrailStatus] ?? i.guardrailStatus } },
+            // tROAS caps consumption — only rendered when a drift snapshot
+            // was supplied (caller signalling: this is a tROAS action AND
+            // we successfully looked the drift up). Empty array spread =
+            // widget disappears entirely for budget actions / missing data.
+            ...(i.troasDrift ? [{
+              decoratedText: {
+                topLabel: 'Consumo dos caps (tROAS)',
+                text: formatCapsConsumption(i.troasDrift),
+              },
+            }] : []),
             ...(blocked ? [] : [{
               buttonList: {
                 buttons: [

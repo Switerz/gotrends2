@@ -27,6 +27,11 @@ import { GoogleChatClient, buildRecommendationCard, ACTION_LABELS_CARD } from '@
 import { runModelsForAccount } from '@/pipeline/runModels'
 import { ExecutionsRepo } from '@/db/repos/executions'
 import { verifyExecution } from '@/agent/verification/executionVerification'
+import { computeTroasDrift } from '@/agent/refiners/troasDrift'
+import {
+  MAX_DAILY_TROAS_DRIFT,
+  MAX_TROAS_DRIFT_7D,
+} from '@/core/constants'
 import { uuid } from '@/lib/uuid'
 import { mapRows } from '@/db/rowMapper'
 
@@ -174,6 +179,47 @@ export async function sendPendingToChat(env: Env): Promise<
     // Blocked recommendations are filtered out above, so the headline always
     // reflects a candidate action the user can act on.
     const headline = ACTION_LABELS_CARD[rec.recommended_action] ?? rec.recommended_action
+
+    // Look up cumulative tROAS drift so the card can show consumption next
+    // to the proposed delta. Only meaningful for tROAS actions; budget
+    // actions skip the lookup entirely. Drift fetch failure is non-fatal
+    // — the widget just doesn't render.
+    let troasDriftSnapshot:
+      | {
+          todayPct: number
+          sevenDayPct: number
+          dailyCapPct: number
+          sevenDayCapPct: number
+          proposedDeltaPct: number
+        }
+      | null = null
+    if (
+      rec.recommended_action === 'increase_troas_or_reduce_budget' &&
+      rec.current_target_roas !== null &&
+      rec.current_target_roas !== 0 &&
+      rec.proposed_target_roas !== null
+    ) {
+      try {
+        const drift = await computeTroasDrift(
+          env.DB,
+          rec.campaign_id,
+          new Date().toISOString(),
+        )
+        troasDriftSnapshot = {
+          todayPct: drift.todayDriftPct,
+          sevenDayPct: drift.sevenDayDriftPct,
+          dailyCapPct: MAX_DAILY_TROAS_DRIFT,
+          sevenDayCapPct: MAX_TROAS_DRIFT_7D,
+          proposedDeltaPct: Math.abs(
+            (rec.proposed_target_roas - rec.current_target_roas) /
+              rec.current_target_roas,
+          ),
+        }
+      } catch {
+        // Swallow — see the constant of `troasDriftSnapshot` set above.
+      }
+    }
+
     const card = buildRecommendationCard(
       {
         recommendationId: rec.recommendation_id,
@@ -189,6 +235,7 @@ export async function sendPendingToChat(env: Env): Promise<
           | 'ok'
           | 'needs_human_review'
           | 'blocked',
+        troasDrift: troasDriftSnapshot,
       },
       appOrigin,
     )

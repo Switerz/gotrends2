@@ -179,6 +179,87 @@ describe('buildRecommendationCard', () => {
     expect(textOf(build({ risk: 'unknown_tier' }), 'Risco')).toBe('unknown_tier')
   })
 
+  it('renders the tROAS caps widget when a drift snapshot is provided', () => {
+    // Operator-facing context for tROAS approvals via Chat — proves the
+    // widget shows consumption + dot indicator + formatted percentages.
+    const card = build({
+      troasDrift: {
+        todayPct: 0.12,
+        sevenDayPct: 0.20,
+        dailyCapPct: 0.40,
+        sevenDayCapPct: 0.30,
+        proposedDeltaPct: 0.05,
+      },
+    })
+    const widgets = widgetsOf(card)
+    const caps = widgets.find(
+      (w) => w.decoratedText?.topLabel === 'Consumo dos caps (tROAS)',
+    )
+    expect(caps).toBeDefined()
+    const text = caps!.decoratedText!.text!
+    // Numeric components present
+    expect(text).toMatch(/Hoje 12% \+ 5% \/ 40%/)
+    expect(text).toMatch(/7d 20% \+ 5% \/ 30%/)
+    // Daily 12+5=17 vs 40 → 17/40=42.5% → safe (green)
+    expect(text).toContain('🟢')
+  })
+
+  it('amber dot when consumption is 70-100% of a cap', () => {
+    // Daily: 30% + 5% = 35% / 40% = 87% of cap → amber
+    // 7d: 20% + 5% = 25% / 30% = 83% of cap → amber
+    const card = build({
+      troasDrift: {
+        todayPct: 0.30,
+        sevenDayPct: 0.20,
+        dailyCapPct: 0.40,
+        sevenDayCapPct: 0.30,
+        proposedDeltaPct: 0.05,
+      },
+    })
+    const text = (
+      widgetsOf(card).find(
+        (w) => w.decoratedText?.topLabel === 'Consumo dos caps (tROAS)',
+      )!.decoratedText!.text!
+    )
+    // Both dots should be amber (🟡)
+    expect((text.match(/🟡/g) ?? []).length).toBe(2)
+  })
+
+  it('coral dot when consumption would breach a cap', () => {
+    // Daily: 38% + 5% = 43% > 40% → red
+    const card = build({
+      troasDrift: {
+        todayPct: 0.38,
+        sevenDayPct: 0.10,
+        dailyCapPct: 0.40,
+        sevenDayCapPct: 0.30,
+        proposedDeltaPct: 0.05,
+      },
+    })
+    const text = (
+      widgetsOf(card).find(
+        (w) => w.decoratedText?.topLabel === 'Consumo dos caps (tROAS)',
+      )!.decoratedText!.text!
+    )
+    expect(text).toContain('🔴')
+  })
+
+  it('does NOT render the caps widget when no drift snapshot is provided (e.g. budget actions)', () => {
+    const card = build({ troasDrift: undefined })
+    const caps = widgetsOf(card).find(
+      (w) => w.decoratedText?.topLabel === 'Consumo dos caps (tROAS)',
+    )
+    expect(caps).toBeUndefined()
+  })
+
+  it('does NOT render the caps widget when troasDrift is explicitly null', () => {
+    const card = build({ troasDrift: null })
+    const caps = widgetsOf(card).find(
+      (w) => w.decoratedText?.topLabel === 'Consumo dos caps (tROAS)',
+    )
+    expect(caps).toBeUndefined()
+  })
+
   it('exports a card-friendly action label map covering every action emitted by the agent', () => {
     // Sanity: each known action returns a non-empty, properly-cased PT-BR label
     expect(ACTION_LABELS_CARD['increase_troas_or_reduce_budget']).toBe('Aumentar tROAS ou reduzir budget')
