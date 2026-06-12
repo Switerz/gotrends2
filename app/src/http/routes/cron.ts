@@ -25,6 +25,8 @@ import { MetabaseClient } from '@/clients/metabase'
 import { GoogleAdsClient } from '@/clients/googleAds'
 import { GoogleChatClient, buildRecommendationCard, ACTION_LABELS_CARD } from '@/clients/googleChat'
 import { runModelsForAccount } from '@/pipeline/runModels'
+import { ExecutionsRepo } from '@/db/repos/executions'
+import { verifyExecution } from '@/agent/verification/executionVerification'
 import { uuid } from '@/lib/uuid'
 import { mapRows } from '@/db/rowMapper'
 
@@ -437,4 +439,117 @@ cronRouter.post('/outcomes/24h', async (c) =>
 )
 cronRouter.post('/outcomes/72h', async (c) =>
   c.json(await computeOutcomesWindow(c.env, 72)),
+)
+
+// ---------------------------------------------------------------------------
+// POST /cron/verify-executions   (every 6 hours)
+// ---------------------------------------------------------------------------
+/**
+ * Post-execute verification driver. Walks every successful execution whose
+ * `completed_at` falls in the 2h–24h band and is still unverified, polls
+ * Google Ads for the live value, and stamps the row with the verdict.
+ *
+ * Time band rationale:
+ *   - 2h lower bound  → give Smart Bidding time to absorb so we don't read
+ *                       a half-applied state and false-flag as `drifted`.
+ *   - 24h upper bound → anything older was probably overwritten by later
+ *                       activity, not a "did our mutate stick?" question.
+ *
+ * Always returns HTTP 200 (same convention as the other cron handlers).
+ * Returns a structured count + per-row errors so an operator can debug.
+ */
+export async function verifyPendingExecutions(env: Env): Promise<
+  | { skipped: true; reason: 'no_google_ads_credentials' }
+  | {
+      verified: number
+      skipped: number
+      counts: Record<string, number>
+      errors: Array<{ execution_id: string; error: string }>
+    }
+> {
+  const clients = buildClients(env)
+  if (!clients.googleAds) {
+    return { skipped: true, reason: 'no_google_ads_credentials' }
+  }
+  const loginCustomerId = env.GOOGLE_ADS_LOGIN_CUSTOMER_ID
+  if (!loginCustomerId) {
+    return { skipped: true, reason: 'no_google_ads_credentials' }
+  }
+  const execsRepo = new ExecutionsRepo(env.DB)
+  const recsRepo = new RecommendationsRepo(env.DB)
+
+  const nowMs = Date.parse(new Date().toISOString())
+  const fromIso = new Date(nowMs - 24 * 3600 * 1000).toISOString()
+  const toIso = new Date(nowMs - 2 * 3600 * 1000).toISOString()
+  const pending = await execsRepo.findUnverifiedInBand(fromIso, toIso)
+
+  // Per-status counter — useful diagnostic when triaging "the 6h cron ran
+  // but I see 0 matches" (often it's all `unavailable` due to credential or
+  // permission issues).
+  const counts: Record<string, number> = {
+    match: 0,
+    drifted: 0,
+    reverted: 0,
+    unavailable: 0,
+  }
+  const errors: Array<{ execution_id: string; error: string }> = []
+  const nowIso = new Date().toISOString()
+
+  for (const exec of pending) {
+    try {
+      const rec = await recsRepo.getById(exec.recommendation_id)
+      if (!rec) {
+        // Defensive — execution row references a rec that no longer exists.
+        // Settle with `unavailable` so we don't retry forever.
+        await execsRepo.markVerified(
+          exec.execution_id,
+          nowIso,
+          'unavailable',
+          null,
+        )
+        counts['unavailable']!++
+        continue
+      }
+      const result = await verifyExecution(
+        clients.googleAds,
+        loginCustomerId,
+        exec,
+        rec,
+      )
+      await execsRepo.markVerified(
+        exec.execution_id,
+        nowIso,
+        result.status,
+        result.observedValue,
+      )
+      counts[result.status] = (counts[result.status] ?? 0) + 1
+      // Loud log for reverts — these are the ones operators want to see in
+      // the dashboard.
+      if (result.status === 'reverted') {
+        console.log(
+          JSON.stringify({
+            event: 'execution_reverted',
+            execution_id: exec.execution_id,
+            recommendation_id: exec.recommendation_id,
+            campaign_id: rec.campaign_id,
+            proposed: result.proposedValue,
+            observed: result.observedValue,
+            action: rec.recommended_action,
+          }),
+        )
+      }
+    } catch (e) {
+      errors.push({
+        execution_id: exec.execution_id,
+        error: (e as Error).message,
+      })
+    }
+  }
+
+  const verified = Object.values(counts).reduce((s, n) => s + n, 0)
+  return { verified, skipped: 0, counts, errors }
+}
+
+cronRouter.post('/verify-executions', async (c) =>
+  c.json(await verifyPendingExecutions(c.env)),
 )

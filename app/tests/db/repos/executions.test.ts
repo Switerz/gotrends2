@@ -16,6 +16,9 @@ function baseExec(over: Partial<ExecutionRow> = {}): Omit<ExecutionRow, 'created
     google_ads_response: null,
     error_message: null,
     completed_at: null,
+    verified_at: null,
+    verification_status: null,
+    verified_value: null,
     ...over,
   } as Omit<ExecutionRow, 'created_at'>
 }
@@ -95,5 +98,115 @@ describe('ExecutionsRepo', () => {
     expect(got?.google_ads_response).toBeNull()
     expect(got?.error_message).toBeNull()
     expect(got?.completed_at).toBeNull()
+  })
+
+  describe('findUnverifiedInBand + markVerified', () => {
+    it('returns only successful, unverified rows whose completed_at is inside the band', async () => {
+      const db = makeFakeDb()
+      const repo = new ExecutionsRepo(db)
+      // Eligible: success + completed in band + unverified
+      await repo.insert(
+        baseExec({
+          execution_id: 'eligible',
+          status: 'success',
+          completed_at: '2026-06-12T10:00:00Z',
+        }),
+      )
+      // Excluded: failed status
+      await repo.insert(
+        baseExec({
+          execution_id: 'failed',
+          status: 'failed',
+          completed_at: '2026-06-12T10:00:00Z',
+        }),
+      )
+      // Excluded: completed_at outside band (too old)
+      await repo.insert(
+        baseExec({
+          execution_id: 'old',
+          status: 'success',
+          completed_at: '2026-06-10T00:00:00Z',
+        }),
+      )
+      // Excluded: already verified. `insert` doesn't carry verification
+      // columns (those belong to markVerified), so we stamp them separately.
+      await repo.insert(
+        baseExec({
+          execution_id: 'done',
+          status: 'success',
+          completed_at: '2026-06-12T11:00:00Z',
+        }),
+      )
+      await repo.markVerified('done', '2026-06-12T13:00:00Z', 'match', 5.5)
+      const got = await repo.findUnverifiedInBand(
+        '2026-06-12T08:00:00Z',
+        '2026-06-12T12:00:00Z',
+      )
+      expect(got.map((e) => e.execution_id)).toEqual(['eligible'])
+    })
+
+    it('orders by completed_at ASC so older rows are processed first', async () => {
+      const db = makeFakeDb()
+      const repo = new ExecutionsRepo(db)
+      await repo.insert(
+        baseExec({
+          execution_id: 'newer',
+          status: 'success',
+          completed_at: '2026-06-12T11:00:00Z',
+        }),
+      )
+      await repo.insert(
+        baseExec({
+          execution_id: 'older',
+          status: 'success',
+          completed_at: '2026-06-12T09:00:00Z',
+        }),
+      )
+      const got = await repo.findUnverifiedInBand(
+        '2026-06-12T00:00:00Z',
+        '2026-06-12T23:59:59Z',
+      )
+      expect(got.map((e) => e.execution_id)).toEqual(['older', 'newer'])
+    })
+
+    it('markVerified stamps verified_at / status / value', async () => {
+      const db = makeFakeDb()
+      const repo = new ExecutionsRepo(db)
+      await repo.insert(
+        baseExec({
+          execution_id: 'e-stamp',
+          status: 'success',
+          completed_at: '2026-06-12T10:00:00Z',
+        }),
+      )
+      await repo.markVerified('e-stamp', '2026-06-12T13:00:00Z', 'reverted', 4.2)
+      const got = await repo.getById('e-stamp')
+      expect(got?.verified_at).toBe('2026-06-12T13:00:00Z')
+      expect(got?.verification_status).toBe('reverted')
+      expect(got?.verified_value).toBe(4.2)
+    })
+
+    it('a verified row no longer shows up in findUnverifiedInBand', async () => {
+      const db = makeFakeDb()
+      const repo = new ExecutionsRepo(db)
+      await repo.insert(
+        baseExec({
+          execution_id: 'e-cycle',
+          status: 'success',
+          completed_at: '2026-06-12T10:00:00Z',
+        }),
+      )
+      const before = await repo.findUnverifiedInBand(
+        '2026-06-12T00:00:00Z',
+        '2026-06-12T23:00:00Z',
+      )
+      expect(before.map((e) => e.execution_id)).toContain('e-cycle')
+      await repo.markVerified('e-cycle', '2026-06-12T13:00:00Z', 'match', 5.5)
+      const after = await repo.findUnverifiedInBand(
+        '2026-06-12T00:00:00Z',
+        '2026-06-12T23:00:00Z',
+      )
+      expect(after.map((e) => e.execution_id)).not.toContain('e-cycle')
+    })
   })
 })

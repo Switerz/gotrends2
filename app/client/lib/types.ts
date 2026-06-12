@@ -34,6 +34,11 @@ export interface RecommendationDTO {
     status: 'stable' | 'learning' | 'limited' | 'unknown'
     label: string
   }
+  verification?: {
+    status: 'match' | 'drifted' | 'reverted' | 'unavailable'
+    observedValue: number | null
+    verifiedAt: string
+  } | null
   expiresAt: string | null
   createdAt: string
   updatedAt: string

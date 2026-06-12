@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useRecommendation } from '~/hooks/useRecommendation'
 import { Card, CardBody, CardHeader } from '~/components/ui/Card'
-import { Badge, biddingLearningTone, guardrailTone, riskTone, statusTone } from '~/components/ui/Badge'
+import {
+  Badge,
+  biddingLearningTone,
+  guardrailTone,
+  riskTone,
+  statusTone,
+  verificationLabel,
+  verificationTone,
+} from '~/components/ui/Badge'
 import { Tabs } from '~/components/ui/Tabs'
 import { Spinner } from '~/components/ui/Spinner'
 import { fmtBrl, fmtNumber, fmtPct, fmtRelative } from '~/lib/formatters'
@@ -197,6 +205,11 @@ function RecommendationDetailView({ id }: { id: string | undefined }) {
         {rec.biddingLearning && (
           <Badge tone={biddingLearningTone(rec.biddingLearning.status)}>
             Bidding: {rec.biddingLearning.label}
+          </Badge>
+        )}
+        {rec.verification && (
+          <Badge tone={verificationTone(rec.verification.status)}>
+            Verificação: {verificationLabel(rec.verification.status)}
           </Badge>
         )}
         <span className="font-mono text-xs text-ink-300">{rec.skill}</span>

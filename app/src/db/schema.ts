@@ -199,7 +199,18 @@ export const SCHEMA_STATEMENTS: string[] = [
     google_ads_response TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    completed_at TEXT
+    completed_at TEXT,
+    -- Post-execute verification: cron polls Google Ads ~2-24h after a
+    -- successful mutate to confirm the value actually persisted. Filled by
+    -- /cron/verify-executions; NULL means "not yet verified".
+    -- Status vocabulary lives in agent/verification/executionVerification.ts:
+    --   'match'        — observed value equals proposed within tolerance
+    --   'drifted'      — small discrepancy (could be rounding/race)
+    --   'reverted'     — observed value differs significantly (manual rollback)
+    --   'unavailable'  — could not read state from Google Ads
+    verified_at TEXT,
+    verification_status TEXT,
+    verified_value REAL
   )`,
 
   // ---------------------------------------------------------------------------
@@ -365,6 +376,18 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     sql: `ALTER TABLE recommendations ADD COLUMN bidding_learning_status TEXT`,
+    expectIfPresent: 'duplicate column name',
+  },
+  {
+    sql: `ALTER TABLE executions ADD COLUMN verified_at TEXT`,
+    expectIfPresent: 'duplicate column name',
+  },
+  {
+    sql: `ALTER TABLE executions ADD COLUMN verification_status TEXT`,
+    expectIfPresent: 'duplicate column name',
+  },
+  {
+    sql: `ALTER TABLE executions ADD COLUMN verified_value REAL`,
     expectIfPresent: 'duplicate column name',
   },
 ]

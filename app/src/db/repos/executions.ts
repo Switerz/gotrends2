@@ -80,4 +80,55 @@ export class ExecutionsRepo {
     )
     return mapRows<ExecutionRow>(columns, rows)
   }
+
+  /**
+   * List successful executions whose post-execute verification is still
+   * pending AND whose `completed_at` falls inside `[from, to]`. Used by the
+   * verification cron, which uses a 2h–24h band:
+   *
+   *   - 2h lower bound  → give Smart Bidding time to absorb the change so
+   *                       we don't read a half-applied state
+   *   - 24h upper bound → if it took longer than that to revert, it's noise
+   *                       from later operator actions, not "did our mutate
+   *                       stick?"
+   *
+   * Returns oldest-first so the cron processes the most stale ones first.
+   */
+  async findUnverifiedInBand(
+    fromIso: string,
+    toIso: string,
+    limit = 50,
+  ): Promise<ExecutionRow[]> {
+    const { columns, rows } = await this.db.query(
+      `SELECT * FROM executions
+       WHERE status = 'success'
+         AND verified_at IS NULL
+         AND completed_at IS NOT NULL
+         AND completed_at >= ?
+         AND completed_at <= ?
+       ORDER BY completed_at ASC
+       LIMIT ?`,
+      [fromIso, toIso, limit],
+    )
+    return mapRows<ExecutionRow>(columns, rows)
+  }
+
+  /**
+   * Stamp verification result on a single execution row. The cron always
+   * fills `verified_at` even on `unavailable` so we don't infinitely retry
+   * the same row — verification is best-effort, not eventually-consistent.
+   */
+  async markVerified(
+    execution_id: string,
+    nowIso: string,
+    status: string,
+    observedValue: number | null,
+  ): Promise<void> {
+    await this.db.exec(
+      `UPDATE executions
+       SET verified_at = ?, verification_status = ?, verified_value = ?
+       WHERE execution_id = ?`,
+      [nowIso, status, observedValue, execution_id],
+    )
+  }
 }

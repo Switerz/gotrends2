@@ -17,6 +17,7 @@ import {
   runModelsForAllAccounts,
   sendPendingToChat,
   computeOutcomesWindow,
+  verifyPendingExecutions,
 } from './cron'
 
 export const adminTriggerRouter = new Hono<{ Bindings: Env }>()
@@ -33,4 +34,7 @@ adminTriggerRouter.post('/outcomes/24h', async (c) =>
 )
 adminTriggerRouter.post('/outcomes/72h', async (c) =>
   c.json(await computeOutcomesWindow(c.env, 72)),
+)
+adminTriggerRouter.post('/verify-executions', async (c) =>
+  c.json(await verifyPendingExecutions(c.env)),
 )

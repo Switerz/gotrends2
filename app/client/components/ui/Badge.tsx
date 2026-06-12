@@ -96,3 +96,32 @@ export function biddingLearningTone(status: string): Tone {
       return 'neutral'
   }
 }
+
+export function verificationTone(status: string): Tone {
+  switch (status) {
+    case 'match':
+      return 'sage'
+    case 'drifted':
+      return 'amber'
+    case 'reverted':
+      return 'coral'
+    default:
+      return 'neutral'
+  }
+}
+
+/** PT-BR label for a verification status; falls through to the raw enum. */
+export function verificationLabel(status: string): string {
+  switch (status) {
+    case 'match':
+      return 'aplicado'
+    case 'drifted':
+      return 'drift detectado'
+    case 'reverted':
+      return 'revertido'
+    case 'unavailable':
+      return 'não verificável'
+    default:
+      return status
+  }
+}

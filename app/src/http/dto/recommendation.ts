@@ -59,6 +59,17 @@ export interface RecommendationDTO {
     status: 'stable' | 'learning' | 'limited' | 'unknown'
     label: string
   }
+  /**
+   * Latest post-execute verification result, when available. Populated only
+   * by the single-rec GET. `null` (or omitted) means no successful execution
+   * has been verified yet — either it's still inside the 2h absorption
+   * window, or no execution exists at all.
+   */
+  verification?: {
+    status: 'match' | 'drifted' | 'reverted' | 'unavailable'
+    observedValue: number | null
+    verifiedAt: string
+  } | null
   expiresAt: string | null
   createdAt: string
   updatedAt: string

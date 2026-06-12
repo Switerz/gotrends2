@@ -202,6 +202,9 @@ export async function seedDevData(db: GodeployDB): Promise<SeedResult> {
           ? null
           : '[mutate_failed] dev simulation: rate limit',
         completed_at: new Date().toISOString(),
+        verified_at: null,
+        verification_status: null,
+        verified_value: null,
       })
       nExecs++
 

@@ -49,15 +49,15 @@ describe('classifyBiddingLearning', () => {
   })
 
   it.each([
-    [null, 'null'],
-    [undefined, 'undefined'],
-    ['', 'empty string'],
-    ['PAUSED', 'PAUSED'],
-    ['PENDING', 'PENDING'],
-    ['REMOVED', 'REMOVED'],
-    ['UNAVAILABLE', 'UNAVAILABLE'],
-    ['SOME_FUTURE_VALUE_GOOGLE_INVENTS', 'unrecognised'],
-  ] as const)('%s → unknown (%s)', (raw) => {
+    null,
+    undefined,
+    '',
+    'PAUSED',
+    'PENDING',
+    'REMOVED',
+    'UNAVAILABLE',
+    'SOME_FUTURE_VALUE_GOOGLE_INVENTS',
+  ])('value %s → unknown (not in any known family)', (raw) => {
     expect(classifyBiddingLearning(raw)).toBe<BiddingLearningStatus>('unknown')
   })
 

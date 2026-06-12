@@ -136,16 +136,48 @@ export function makeFakeDb(): FakeDb {
       const clauses = whereRaw.split(/\s+AND\s+/i).map((c) => c.trim())
       type EqFilter = { kind: 'eq'; col: string; value: unknown }
       type InFilter = { kind: 'in'; col: string; values: unknown[] }
-      const filters: Array<EqFilter | InFilter> = []
+      type NullFilter = { kind: 'null'; col: string; negated: boolean }
+      type CompareFilter = {
+        kind: 'cmp'
+        col: string
+        op: '<' | '<=' | '>' | '>='
+        value: unknown
+      }
+      type AnyFilter = EqFilter | InFilter | NullFilter | CompareFilter
+      const filters: AnyFilter[] = []
       for (const c of clauses) {
-        // `col = ?`
-        const eq = c.match(/^(\w+)\s*=\s*\?$/)
+        // `col = ?` or `col = 'literal'`
+        const eq = c.match(/^(\w+)\s*=\s*(\?|'[^']*')$/)
         if (eq) {
-          filters.push({ kind: 'eq', col: eq[1]!, value: params[paramIdx++] })
+          const rhs = eq[2]!
+          const v = rhs === '?' ? params[paramIdx++] : rhs.slice(1, -1)
+          filters.push({ kind: 'eq', col: eq[1]!, value: v })
           continue
         }
-        // `col IN ('a', 'b', 'c')` — literals only; we don't currently emit
-        // parameterised IN clauses from any repo. Strips quotes off each.
+        // `col IS NULL` / `col IS NOT NULL`
+        const nullCheck = c.match(/^(\w+)\s+IS\s+(NOT\s+)?NULL$/i)
+        if (nullCheck) {
+          filters.push({
+            kind: 'null',
+            col: nullCheck[1]!,
+            negated: Boolean(nullCheck[2]),
+          })
+          continue
+        }
+        // `col {<,<=,>,>=} ?` or literal
+        const cmp = c.match(/^(\w+)\s*(<=|>=|<|>)\s*(\?|'[^']*')$/)
+        if (cmp) {
+          const rhs = cmp[3]!
+          const v = rhs === '?' ? params[paramIdx++] : rhs.slice(1, -1)
+          filters.push({
+            kind: 'cmp',
+            col: cmp[1]!,
+            op: cmp[2]! as CompareFilter['op'],
+            value: v,
+          })
+          continue
+        }
+        // `col IN ('a', 'b', 'c')` — literals only.
         const inLit = c.match(/^(\w+)\s+IN\s*\(\s*(.+?)\s*\)$/i)
         if (inLit) {
           const values = inLit[2]!
@@ -157,11 +189,26 @@ export function makeFakeDb(): FakeDb {
         throw new Error(`fakeDb.query: unsupported WHERE clause: ${c}`)
       }
       rows = rows.filter((r) =>
-        filters.every((f) =>
-          f.kind === 'eq'
-            ? r[f.col] === f.value
-            : f.values.includes(r[f.col] as string),
-        ),
+        filters.every((f) => {
+          const cell = r[f.col]
+          switch (f.kind) {
+            case 'eq':
+              return cell === f.value
+            case 'null':
+              return f.negated ? cell !== null && cell !== undefined : cell === null || cell === undefined
+            case 'cmp': {
+              if (cell === null || cell === undefined) return false
+              const a = cell as string | number
+              const b = f.value as string | number
+              if (f.op === '<') return a < b
+              if (f.op === '<=') return a <= b
+              if (f.op === '>') return a > b
+              return a >= b
+            }
+            case 'in':
+              return f.values.includes(cell as string)
+          }
+        }),
       )
     }
 

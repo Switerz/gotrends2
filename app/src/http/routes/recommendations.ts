@@ -22,6 +22,7 @@ import { RecommendationsRepo } from '@/db/repos/recommendations'
 import { AccountsRepo } from '@/db/repos/accounts'
 import { ApprovalsRepo } from '@/db/repos/approvals'
 import { ChatRepo } from '@/db/repos/chat'
+import { ExecutionsRepo } from '@/db/repos/executions'
 import { toRecommendationDTO } from '@/http/dto/recommendation'
 import { computeTroasDrift } from '@/agent/refiners/troasDrift'
 import {
@@ -93,6 +94,22 @@ recsRouter.get('/:id', async (c) => {
     dto.biddingLearning = {
       status,
       label: BIDDING_LEARNING_LABELS[status] ?? row.bidding_learning_status,
+    }
+  }
+
+  // Attach the latest verified execution for this rec (one rec → ≤ 1 verified
+  // execution in practice). The SPA surfaces this as a badge near guardrail
+  // so operators can spot `reverted` mutates at a glance.
+  const execsRepo = new ExecutionsRepo(c.env.DB)
+  const executions = await execsRepo.listByRecommendation(row.recommendation_id)
+  const verified = executions
+    .filter((e) => e.verified_at !== null && e.verification_status !== null)
+    .sort((a, b) => (a.verified_at! < b.verified_at! ? 1 : -1))[0]
+  if (verified && verified.verification_status) {
+    dto.verification = {
+      status: verified.verification_status,
+      observedValue: verified.verified_value,
+      verifiedAt: verified.verified_at!,
     }
   }
   return c.json(dto)

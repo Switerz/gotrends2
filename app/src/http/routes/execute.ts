@@ -109,6 +109,9 @@ export function executeRouterFactory(
       google_ads_response: null,
       error_message: null,
       completed_at: null,
+      verified_at: null,
+      verification_status: null,
+      verified_value: null,
     })
     await recsRepo.setStatus(rec.recommendation_id, 'executing')
 

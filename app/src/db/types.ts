@@ -182,6 +182,9 @@ export interface ApprovalRow {
 
 export type ExecutionStatus = 'pending' | 'success' | 'failed'
 
+/** Post-execute verification outcome (see `agent/verification/`). */
+export type VerificationStatus = 'match' | 'drifted' | 'reverted' | 'unavailable'
+
 /** Row in `executions`. `google_ads_request` and `google_ads_response` are JSON-encoded TEXT. */
 export interface ExecutionRow {
   execution_id: string
@@ -196,6 +199,16 @@ export interface ExecutionRow {
   error_message: string | null
   created_at: string
   completed_at: string | null
+  /** When the verification cron polled Google Ads for this execution. NULL =
+   *  not verified yet (either too recent or not eligible). */
+  verified_at: string | null
+  /** Verification verdict — see `VerificationStatus`. NULL when `verified_at`
+   *  is also NULL; never NULL when `verified_at` is set. */
+  verification_status: VerificationStatus | null
+  /** Numeric value observed in Google Ads at verification time (tROAS for
+   *  bid mutates, budget in BRL for budget mutates). NULL when the field
+   *  couldn't be read (campaign deleted, API error, etc). */
+  verified_value: number | null
 }
 
 /** Row in `execution_outcomes`. */
