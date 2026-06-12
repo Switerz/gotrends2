@@ -23,7 +23,7 @@ import { OutcomesRepo } from '@/db/repos/outcomes'
 import { ChatRepo } from '@/db/repos/chat'
 import { MetabaseClient } from '@/clients/metabase'
 import { GoogleAdsClient } from '@/clients/googleAds'
-import { GoogleChatClient, buildRecommendationCard } from '@/clients/googleChat'
+import { GoogleChatClient, buildRecommendationCard, ACTION_LABELS_CARD } from '@/clients/googleChat'
 import { runModelsForAccount } from '@/pipeline/runModels'
 import { uuid } from '@/lib/uuid'
 import { mapRows } from '@/db/rowMapper'
@@ -168,10 +168,13 @@ export async function sendPendingToChat(env: Env): Promise<
       continue
     }
 
+    // Blocked recommendations are filtered out above, so the headline always
+    // reflects a candidate action the user can act on.
+    const headline = ACTION_LABELS_CARD[rec.recommended_action] ?? rec.recommended_action
     const card = buildRecommendationCard(
       {
         recommendationId: rec.recommendation_id,
-        headline: `${rec.recommended_action} em ${rec.campaign_name}`,
+        headline,
         campaign: rec.campaign_name,
         changePercent: rec.change_percent,
         expectedRevenueBrl: rec.expected_incremental_revenue_brl,

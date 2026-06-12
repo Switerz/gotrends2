@@ -15,6 +15,36 @@ export interface RecommendationCardInput {
   guardrailStatus: 'ok' | 'needs_human_review' | 'blocked'
 }
 
+// PT-BR labels surfaced on the card. Unknown values fall through so a new
+// enum from the model never silently disappears from the card.
+const GUARDRAIL_LABELS: Record<string, string> = {
+  ok: 'OK',
+  needs_human_review: 'Revisão humana',
+  blocked: 'Bloqueado',
+}
+
+const RISK_LABELS: Record<string, string> = {
+  low: 'baixo',
+  medium: 'médio',
+  high: 'alto',
+}
+
+/**
+ * Capitalized PT-BR labels for the recommended_action enum, used in card
+ * headlines. The agent module has its own lowercase variant for narrative
+ * text — kept distinct so neither callsite needs to .toUpperCase() the other.
+ */
+export const ACTION_LABELS_CARD: Record<string, string> = {
+  increase_budget: 'Aumentar budget',
+  reduce_budget: 'Reduzir budget',
+  increase_troas_or_reduce_budget: 'Aumentar tROAS ou reduzir budget',
+  optimize_efficiency: 'Otimizar eficiência',
+  improve_ads_or_terms: 'Melhorar anúncios ou termos',
+  review_landing_or_offer: 'Revisar landing ou oferta',
+  monitor: 'Monitorar',
+  pause: 'Pausar',
+}
+
 /** Formats a BRL value: 1234.56 → "R$ 1.234,56"; null → "—". */
 function fmtBrl(v: number | null): string {
   if (v === null || !Number.isFinite(v)) return '—'
@@ -60,8 +90,8 @@ export function buildRecommendationCard(i: RecommendationCardInput, appOrigin: s
             { decoratedText: { topLabel: 'Custo incremental esperado', text: fmtBrl(i.expectedCostBrl) } },
             { decoratedText: { topLabel: 'ROAS marginal', text: i.marginalRoas !== null ? i.marginalRoas.toFixed(2).replace('.', ',') : '—' } },
             { decoratedText: { topLabel: 'Confiança', text: i.confidence !== null ? String(i.confidence) : '—' } },
-            { decoratedText: { topLabel: 'Risco', text: i.risk ?? '—' } },
-            { decoratedText: { topLabel: 'Guardrail', text: i.guardrailStatus } },
+            { decoratedText: { topLabel: 'Risco', text: i.risk ? (RISK_LABELS[i.risk] ?? i.risk) : '—' } },
+            { decoratedText: { topLabel: 'Guardrail', text: GUARDRAIL_LABELS[i.guardrailStatus] ?? i.guardrailStatus } },
             ...(blocked ? [] : [{
               buttonList: {
                 buttons: [

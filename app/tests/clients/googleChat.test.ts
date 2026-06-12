@@ -3,6 +3,7 @@ import {
   GoogleChatClient,
   buildRecommendationCard,
   parseInteractionEvent,
+  ACTION_LABELS_CARD,
   type RecommendationCardInput,
 } from '@/clients/googleChat'
 
@@ -161,6 +162,33 @@ describe('buildRecommendationCard', () => {
   it('formats marginalRoas: 2.987 → "2,99" (2 decimals)', () => {
     const card = build({ marginalRoas: 2.987 })
     expect(textOf(card, 'ROAS marginal')).toBe('2,99')
+  })
+
+  it('humanises guardrailStatus on the Guardrail widget', () => {
+    expect(textOf(build({ guardrailStatus: 'ok' }), 'Guardrail')).toBe('OK')
+    expect(textOf(build({ guardrailStatus: 'needs_human_review' }), 'Guardrail')).toBe('Revisão humana')
+    expect(textOf(build({ guardrailStatus: 'blocked' }), 'Guardrail')).toBe('Bloqueado')
+  })
+
+  it('humanises risk values to PT-BR (low/medium/high → baixo/médio/alto), passes through unknown values', () => {
+    expect(textOf(build({ risk: 'low' }), 'Risco')).toBe('baixo')
+    expect(textOf(build({ risk: 'medium' }), 'Risco')).toBe('médio')
+    expect(textOf(build({ risk: 'high' }), 'Risco')).toBe('alto')
+    // Unknown values must not be dropped — the card surfaces the raw string so
+    // a new enum from the model is still visible until labels are extended.
+    expect(textOf(build({ risk: 'unknown_tier' }), 'Risco')).toBe('unknown_tier')
+  })
+
+  it('exports a card-friendly action label map covering every action emitted by the agent', () => {
+    // Sanity: each known action returns a non-empty, properly-cased PT-BR label
+    expect(ACTION_LABELS_CARD['increase_troas_or_reduce_budget']).toBe('Aumentar tROAS ou reduzir budget')
+    expect(ACTION_LABELS_CARD['increase_budget']).toBe('Aumentar budget')
+    expect(ACTION_LABELS_CARD['monitor']).toBe('Monitorar')
+    // Every entry starts with an uppercase letter — they're used as headlines.
+    for (const label of Object.values(ACTION_LABELS_CARD)) {
+      expect(label.length).toBeGreaterThan(0)
+      expect(label[0]).toBe(label[0]!.toUpperCase())
+    }
   })
 })
 
