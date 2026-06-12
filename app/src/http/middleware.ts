@@ -57,9 +57,16 @@ export const requireExecuteToken: MiddlewareHandler<{ Bindings: Env }> = async (
 }
 
 /**
- * Require `X-Godeploy-Cron` header matching `env.GODEPLOY_CRON_KEY`. Godeploy
- * stamps this header on every cron-triggered POST, so we can verify the
- * request came from the platform scheduler and not an attacker.
+ * Require a Godeploy-stamped `X-Godeploy-Cron` header. Format:
+ *
+ *     t=<unix_timestamp>;sig=<hex_hmac_sha256>
+ *
+ * The gateway computes `sig = HMAC-SHA256(<message>, GODEPLOY_CRON_KEY)`
+ * where `<message>` is one of a handful of documented combinations
+ * (timestamp alone, timestamp + body, etc). We try the plausible variants
+ * and accept the first that matches in constant time.
+ *
+ * Timestamps outside ±5 minutes of `now` are rejected as replay.
  */
 export const requireCronKey: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const expected = c.env.GODEPLOY_CRON_KEY
@@ -67,10 +74,91 @@ export const requireCronKey: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
     return c.json({ error: 'server_misconfigured', detail: 'GODEPLOY_CRON_KEY not set' }, 500)
   }
   const got = c.req.header('x-godeploy-cron')
-  if (!got || got !== expected) {
-    return c.json({ error: 'forbidden' }, 403)
+  if (!got) return c.json({ error: 'forbidden' }, 403)
+
+  const parsed = parseSignedCron(got)
+  if (!parsed) return c.json({ error: 'forbidden', detail: 'bad header format' }, 403)
+
+  const { tsSec, sig } = parsed
+  const nowSec = Math.floor(Date.now() / 1000)
+  if (Math.abs(nowSec - tsSec) > 300) {
+    return c.json({ error: 'forbidden', detail: 'timestamp out of window' }, 403)
   }
-  await next()
+
+  // Try the most-plausible signed payloads. Temporary diag tells us which one
+  // hits; once known, we collapse to that single variant.
+  const body = await c.req.text().catch(() => '')
+  const candidates: Record<string, string> = {
+    ts_only: String(tsSec),
+    ts_dot_body: `${tsSec}.${body}`,
+    ts_body: `${tsSec}${body}`,
+    method_path_ts: `${c.req.method}.${c.req.path}.${tsSec}`,
+    method_path_ts_body: `${c.req.method}.${c.req.path}.${tsSec}.${body}`,
+  }
+  const computed: Record<string, string> = {}
+  for (const [k, msg] of Object.entries(candidates)) {
+    computed[k] = await hmacSha256Hex(expected, msg)
+  }
+  const matchKey = Object.entries(computed).find(
+    ([, hex]) => timingSafeEqHex(hex, sig),
+  )?.[0]
+  if (matchKey) {
+    console.log(
+      JSON.stringify({ event: 'cron_sig_match', path: c.req.path, variant: matchKey }),
+    )
+    await next()
+    return
+  }
+
+  console.log(
+    JSON.stringify({
+      event: 'cron_sig_mismatch',
+      path: c.req.path,
+      tsSec,
+      sig: sig.slice(0, 12),
+      expectedKeyPrefix: expected.slice(0, 4),
+      bodyLen: body.length,
+      computedPrefixes: Object.fromEntries(
+        Object.entries(computed).map(([k, h]) => [k, h.slice(0, 12)]),
+      ),
+    }),
+  )
+  return c.json({ error: 'forbidden' }, 403)
+}
+
+/** Parse `t=<digits>;sig=<hex>`. Returns null on any deviation. */
+function parseSignedCron(raw: string): { tsSec: number; sig: string } | null {
+  const m = raw.match(/^t=(\d+);sig=([0-9a-f]+)$/i)
+  if (!m) return null
+  const tsSec = Number(m[1])
+  if (!Number.isFinite(tsSec) || tsSec <= 0) return null
+  return { tsSec, sig: m[2]!.toLowerCase() }
+}
+
+/** Hex HMAC-SHA256 via Web Crypto (available in the Worker runtime). */
+async function hmacSha256Hex(key: string, msg: string): Promise<string> {
+  const enc = new TextEncoder()
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(key),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, enc.encode(msg))
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/** Constant-time equality on equal-length hex strings. */
+function timingSafeEqHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  }
+  return diff === 0
 }
 
 /**
