@@ -280,6 +280,107 @@ describe('RecommendationsRepo', () => {
       expect((await repo.getById('theirs'))?.status).toBe('pending')
     })
 
+    it('findLastRejected: returns the most recent rejected rec inside the window for (account, campaign, action)', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      // Insert a rejected rec, then backdate updated_at to 3 days ago.
+      await repo.insert(
+        baseRec({ recommendation_id: 'r-inside', status: 'rejected', change_percent: 0.10 }),
+      )
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.updated_at = '2026-06-09 12:00:00'
+
+      const got = await repo.findLastRejected(
+        '7705857660',
+        'camp-1',
+        'increase_budget',
+        '2026-06-05 00:00:00', // window starts 7 days ago
+      )
+      expect(got?.recommendation_id).toBe('r-inside')
+      expect(got?.change_percent).toBe(0.10)
+    })
+
+    it('findLastRejected: ignores rejections OLDER than the window', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(baseRec({ recommendation_id: 'r-old', status: 'rejected' }))
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.updated_at = '2026-05-15 00:00:00' // way before window
+
+      const got = await repo.findLastRejected(
+        '7705857660',
+        'camp-1',
+        'increase_budget',
+        '2026-06-05 00:00:00',
+      )
+      expect(got).toBeNull()
+    })
+
+    it('findLastRejected: scoped by recommended_action (different action ≠ cooldown match)', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(
+        baseRec({
+          recommendation_id: 'r-other-action',
+          status: 'rejected',
+          recommended_action: 'reduce_budget',
+        }),
+      )
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.updated_at = '2026-06-10 00:00:00'
+
+      // Query for increase_budget — should NOT match the reduce_budget row.
+      const got = await repo.findLastRejected(
+        '7705857660',
+        'camp-1',
+        'increase_budget',
+        '2026-06-05 00:00:00',
+      )
+      expect(got).toBeNull()
+    })
+
+    it('findLastRejected: only considers status="rejected" (not pending/executed/expired)', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      // Various non-rejected terminal/non-terminal recs in the window
+      await repo.insert(baseRec({ recommendation_id: 'pending-r', status: 'pending' }))
+      await repo.insert(baseRec({ recommendation_id: 'executed-r', status: 'executed' }))
+      await repo.insert(baseRec({ recommendation_id: 'expired-r', status: 'expired' }))
+      const arr = db.tables.get('recommendations')!
+      for (const row of arr) row.updated_at = '2026-06-10 00:00:00'
+
+      const got = await repo.findLastRejected(
+        '7705857660',
+        'camp-1',
+        'increase_budget',
+        '2026-06-05 00:00:00',
+      )
+      expect(got).toBeNull()
+    })
+
+    it('findLastRejected: returns the MOST RECENT when multiple rejections in window', async () => {
+      const db = makeFakeDb()
+      const repo = new RecommendationsRepo(db)
+      await repo.insert(
+        baseRec({ recommendation_id: 'older-rej', status: 'rejected', change_percent: 0.05 }),
+      )
+      await repo.insert(
+        baseRec({ recommendation_id: 'newer-rej', status: 'rejected', change_percent: 0.20 }),
+      )
+      const arr = db.tables.get('recommendations')!
+      arr[0]!.updated_at = '2026-06-08 00:00:00'
+      arr[1]!.updated_at = '2026-06-11 00:00:00'
+
+      const got = await repo.findLastRejected(
+        '7705857660',
+        'camp-1',
+        'increase_budget',
+        '2026-06-05 00:00:00',
+      )
+      expect(got?.recommendation_id).toBe('newer-rej')
+      expect(got?.change_percent).toBe(0.20)
+    })
+
     it('after expire, dedup gate releases the campaign for a new rec', async () => {
       // End-to-end: stale rec → expire sweep → findActiveByCampaign returns null
       const db = makeFakeDb()

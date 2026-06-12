@@ -141,7 +141,35 @@ Telemetria: contador `nExpiredStale` no `RunResult`. Valor não-zero é
 normal e saudável (operador rodou, sistema reciclou). Valor persistente
 alto sinaliza saturação da fila de aprovação no Chat.
 
-### 9. Dedup hot-state
+### 9. Rejection cooldown + variation gate
+
+Implementado em `pipeline/runModels.ts`, depois do dedup hot-state e antes
+do `persistDecision`.
+
+Se houve rec **rejeitada** para `(account_id, campaign_id, recommended_action)`
+nos últimos `REC_REJECTION_COOLDOWN_DAYS = 7` dias, o candidato novo só
+passa se a magnitude proposta diferir o suficiente da rejeitada:
+
+```
+|candidate.change_percent − lastRejected.change_percent| ≥ REC_VARIATION_RESET_THRESHOLD
+```
+
+`REC_VARIATION_RESET_THRESHOLD = 0.10` (10 pontos percentuais). Exemplos:
+
+- Operador rejeitou +10 % ontem → pipeline propõe +12 % hoje → **bloqueado** (delta 2pp)
+- Operador rejeitou +10 % ontem → pipeline propõe +25 % hoje → passa (delta 15pp)
+- Rejeitou increase_budget → propõe increase_troas_or_reduce_budget → passa (ação diferente, mesmo problema diferente)
+- Rejeição com mais de 7 dias → ignora (janela rolou, sinal mudou)
+
+Filosofia: rejeição é **terminal**, dedup hot-state libera a campanha. Mas
+"liberar" não pode significar "ping todo dia com a mesma sugestão". O modelo
+defaulta `change_percent = 0.10` então o segundo run frequentemente propõe
+exatamente o mesmo número — daí o variation gate.
+
+Telemetria: contador `nSkippedRejectionCooldown` no `RunResult` + log
+estruturado `skipped_rejection_cooldown` com IDs e deltas.
+
+### 10. Dedup hot-state
 
 Implementado em `pipeline/runModels.ts` **antes** do `persistDecision`,
 depois do sweep de stale.
@@ -173,6 +201,8 @@ Todas em `app/src/core/constants.ts`:
 | `MAX_TROAS_DRIFT_7D` | `0.30` | soft cap 7d, tROAS only |
 | `RECOMMENDATION_TTL_HOURS` | `24` | expiração default no rec.expires_at |
 | `RECOMMENDATION_STALE_HOURS` | `12` | sweep automático de pending/sent_to_chat |
+| `REC_REJECTION_COOLDOWN_DAYS` | `7` | janela do cooldown de rejeição |
+| `REC_VARIATION_RESET_THRESHOLD` | `0.10` | delta de magnitude que libera bypass do cooldown (10pp) |
 
 ## Por que tROAS e não budget nos caps cumulativos
 

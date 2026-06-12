@@ -24,7 +24,11 @@ import {
   classifyBiddingLearning,
   type BiddingLearningStatus,
 } from '@/agent/refiners/biddingLearning'
-import { RECOMMENDATION_STALE_HOURS } from '@/core/constants'
+import {
+  RECOMMENDATION_STALE_HOURS,
+  REC_REJECTION_COOLDOWN_DAYS,
+  REC_VARIATION_RESET_THRESHOLD,
+} from '@/core/constants'
 import { applyRevenueOverlay, type RevenueOverlayResult } from './revenueOverlay'
 import type { Env } from '@/index'
 import { uuid } from '@/lib/uuid'
@@ -70,6 +74,11 @@ export interface RunResult {
    *  WHERE clause; this counter catches edge cases where the Metabase
    *  daily window has historical data for a now-paused campaign. */
   nSkippedNotEnabled: number
+  /** Candidates skipped because an operator rejected a similar rec for
+   *  the same (campaign, action) within the cooldown window AND the new
+   *  proposal didn't clear the variation threshold. Defends against the
+   *  "rejecting the same suggestion day after day" pattern. */
+  nSkippedRejectionCooldown: number
   /** Revenue overlay telemetry. Surfaces how many daily rows had the
    *  Google-Ads `conversion_value` proxy replaced with ground-truth
    *  revenue from the configured e-commerce provider (Yampi today).
@@ -160,6 +169,7 @@ export async function runModelsForAccount(
         nRecommendations: 0,
         nSkippedDedup: 0,
         nSkippedNotEnabled: 0,
+        nSkippedRejectionCooldown: 0,
         nExpiredStale,
         revenueOverlay,
         errors,
@@ -200,9 +210,15 @@ export async function runModelsForAccount(
     let nRecs = 0
     let nSkippedDedup = 0
     let nSkippedNotEnabled = 0
+    let nSkippedRejectionCooldown = 0
     const nScanned = constraints.length
     // Reuse the same repo instance the expire-sweep created.
     const recsRepo = recsRepoForExpire
+    // Cooldown lower bound (UTC). Anything rejected at-or-after this is in
+    // the cooldown window; older rejections no longer block.
+    const rejectionCooldownAfterIso = new Date(
+      Date.parse(nowIso) - REC_REJECTION_COOLDOWN_DAYS * 24 * 3600 * 1000,
+    ).toISOString()
     for (const row of constraints) {
       try {
         // Defence-in-depth filter: even with the GAQL WHERE clause, a
@@ -241,6 +257,46 @@ export async function runModelsForAccount(
           )
           continue
         }
+        // Rejection cooldown + variation gate. If the operator turned down
+        // a similar rec for the same (campaign, action) within the
+        // cooldown window, only re-pin them when the proposal is
+        // meaningfully different in magnitude.
+        const c = candidate as {
+          recommended_action: string
+          change_percent: number | null
+        }
+        const lastRejected = await recsRepo.findLastRejected(
+          opts.accountId,
+          campaignId,
+          c.recommended_action,
+          rejectionCooldownAfterIso,
+        )
+        if (
+          lastRejected !== null &&
+          c.change_percent !== null &&
+          lastRejected.change_percent !== null
+        ) {
+          const magnitudeDelta = Math.abs(
+            c.change_percent - lastRejected.change_percent,
+          )
+          if (magnitudeDelta < REC_VARIATION_RESET_THRESHOLD) {
+            nSkippedRejectionCooldown++
+            console.log(
+              JSON.stringify({
+                event: 'skipped_rejection_cooldown',
+                runId,
+                campaignId,
+                action: c.recommended_action,
+                lastRejectedId: lastRejected.recommendation_id,
+                lastRejectedChangePct: lastRejected.change_percent,
+                proposedChangePct: c.change_percent,
+                magnitudeDelta,
+                thresholdRequired: REC_VARIATION_RESET_THRESHOLD,
+              }),
+            )
+            continue
+          }
+        }
         await persistDecision(db, candidate, {
           runId,
           recommendationId: uuid(),
@@ -260,6 +316,7 @@ export async function runModelsForAccount(
       nRecommendations: nRecs,
       nSkippedDedup,
       nSkippedNotEnabled,
+      nSkippedRejectionCooldown,
       nExpiredStale,
       revenueOverlay,
       errors,
@@ -273,6 +330,7 @@ export async function runModelsForAccount(
       nRecommendations: 0,
       nSkippedDedup: 0,
       nSkippedNotEnabled: 0,
+      nSkippedRejectionCooldown: 0,
       nExpiredStale: 0,
       revenueOverlay: {
         nOrdersFetched: 0,

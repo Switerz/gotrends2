@@ -151,6 +151,37 @@ export class RecommendationsRepo {
   }
 
   /**
+   * Find the most recent rejected recommendation for
+   * `(account_id, campaign_id, recommended_action)` within the cooldown
+   * window. Used by the pipeline to skip regenerating a candidate that an
+   * operator just turned down.
+   *
+   * `updatedAtAfterIso` is compared against `updated_at` because that's
+   * when the status flip to 'rejected' happened. Returns null when no
+   * rejection inside the window.
+   */
+  async findLastRejected(
+    account_id: string,
+    campaign_id: string,
+    recommended_action: string,
+    updatedAtAfterIso: string,
+  ): Promise<RecommendationRow | null> {
+    const { columns, rows } = await this.db.query(
+      `SELECT * FROM recommendations
+       WHERE account_id = ?
+         AND campaign_id = ?
+         AND recommended_action = ?
+         AND status = 'rejected'
+         AND updated_at >= ?
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [account_id, campaign_id, recommended_action, updatedAtAfterIso],
+    )
+    if (rows.length === 0) return null
+    return mapRow<RecommendationRow>(columns, rows[0]!)
+  }
+
+  /**
    * Find a non-terminal recommendation for (account_id, campaign_id), or null.
    *
    * "Non-terminal" = the rec can still be acted on (pending → sent_to_chat →

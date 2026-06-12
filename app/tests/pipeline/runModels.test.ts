@@ -301,6 +301,45 @@ describe('runModelsForAccount', () => {
     expect(second.nRecommendations).toBe(first.nRecommendations)
   })
 
+  it('rejection cooldown: rec rejected within 7d with similar magnitude → skipped (counts to nSkippedRejectionCooldown)', async () => {
+    const db = makeFakeDb()
+    const daily = loadDailyFixture() as Record<string, unknown>[]
+
+    // First run: generate recs normally.
+    const first = await runModelsForAccount(
+      db,
+      ...Object.values(makeClients({ metabaseRows: daily, googleAdsRows: fakeAdsSettings() })),
+      baseOpts,
+      NOW_ISO,
+    )
+    expect(first.nRecommendations).toBeGreaterThan(0)
+
+    // Simulate operator rejecting every rec from that run + backdate
+    // updated_at to "1 day ago" so they fall inside the cooldown window.
+    const recs = db.tables.get('recommendations')!
+    const oneDayAgo = new Date(Date.parse(NOW_ISO) - 24 * 3600 * 1000)
+      .toISOString()
+      .replace('T', ' ')
+      .replace(/\..*$/, '')
+    for (const r of recs) {
+      r['status'] = 'rejected'
+      r['updated_at'] = oneDayAgo
+    }
+
+    // Second run: pipeline emits the SAME candidates (same fixture, same
+    // change_percent default of 0.10) — cooldown should block them all.
+    const second = await runModelsForAccount(
+      db,
+      ...Object.values(makeClients({ metabaseRows: daily, googleAdsRows: fakeAdsSettings() })),
+      baseOpts,
+      NOW_ISO,
+    )
+    expect(second.status).toBe('success')
+    expect(second.nRecommendations).toBe(0)
+    expect(second.nSkippedRejectionCooldown).toBe(first.nRecommendations)
+    expect(second.nSkippedDedup).toBe(0) // dedup hot-state isn't what's blocking
+  })
+
   it('only ENABLED campaigns become recommendations; paused/removed are skipped', async () => {
     // 5 fixture campaigns: 3 ENABLED, 2 PAUSED. Defence-in-depth check —
     // even if the GAQL WHERE clause failed to filter, the pipeline still

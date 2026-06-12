@@ -18,6 +18,30 @@ export const RECOMMENDATION_TTL_HOURS = 24
  */
 export const RECOMMENDATION_STALE_HOURS = 12
 
+/**
+ * Window during which a previously-rejected recommendation for the same
+ * `(campaign_id, recommended_action)` blocks new recs of substantially
+ * similar magnitude. Prevents the loop where the operator says "not now",
+ * the underlying signal barely moves overnight, and the next day's run
+ * proposes the same change again — operator fatigue is real and the
+ * sweep of stale recs (12h) doesn't solve it because rejection is itself
+ * a terminal state that frees the campaign.
+ */
+export const REC_REJECTION_COOLDOWN_DAYS = 7
+
+/**
+ * Magnitude bar a new candidate must clear to bypass the rejection
+ * cooldown. Measured as absolute difference in `change_percent` against
+ * the most recent rejection within the window.
+ *
+ * 0.10 = 10 percentage points. A +10 % rec rejected last week → a +12 %
+ * proposed today is blocked (delta 2pp), but a +25 % is allowed
+ * (delta 15pp ≥ 10pp). The model only crosses this bar when the
+ * underlying signal really moved, which is exactly when re-pinging the
+ * operator is justified.
+ */
+export const REC_VARIATION_RESET_THRESHOLD = 0.10
+
 /** Hard limit on a single recommendation's change_percent magnitude. */
 export const MAX_ABS_CHANGE_PERCENT = 0.5
 
