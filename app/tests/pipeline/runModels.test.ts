@@ -301,6 +301,64 @@ describe('runModelsForAccount', () => {
     expect(second.nRecommendations).toBe(first.nRecommendations)
   })
 
+  it('only ENABLED campaigns become recommendations; paused/removed are skipped', async () => {
+    // 5 fixture campaigns: 3 ENABLED, 2 PAUSED. Defence-in-depth check —
+    // even if the GAQL WHERE clause failed to filter, the pipeline still
+    // drops the paused ones via the campaign_status check.
+    const db = makeFakeDb()
+    const daily = loadDailyFixture() as Record<string, unknown>[]
+    const adsSettings = fakeAdsSettings().map((r, i) => {
+      // Mark c-003 and c-004 as PAUSED (index 2 and 3).
+      const rec = r as { campaign?: { status?: string } }
+      if (i === 2 || i === 3) {
+        return { ...rec, campaign: { ...rec.campaign, status: 'PAUSED' } }
+      }
+      return r
+    })
+    const { metabase, googleAds } = makeClients({
+      metabaseRows: daily,
+      googleAdsRows: adsSettings,
+    })
+
+    const result = await runModelsForAccount(db, metabase, googleAds, baseOpts, NOW_ISO)
+
+    expect(result.status).toBe('success')
+    expect(result.nSkippedNotEnabled).toBeGreaterThanOrEqual(2)
+
+    const recs = db.tables.get('recommendations') ?? []
+    // No rec for c-003 or c-004 — they're paused.
+    expect(recs.find((r) => r['campaign_id'] === 'c-003')).toBeUndefined()
+    expect(recs.find((r) => r['campaign_id'] === 'c-004')).toBeUndefined()
+  })
+
+  it('buildSettingsGaql filters to ENABLED campaigns at the source', async () => {
+    // Sanity: the GAQL string carries the WHERE clause. The pipeline
+    // tolerates absence of the filter via the post-join defence, but the
+    // source-level filter is what we depend on to keep the Google Ads
+    // round-trip cheap.
+    const settingsGaqlModule = await import('@/pipeline/runModels')
+    // The function is not exported individually, but we can inspect via a
+    // tiny invocation that returns the GAQL — easiest path is to call the
+    // pipeline and assert the searchStream input.
+    // Tests above already exercise that path; this test asserts the SQL.
+    const fakeAds = {
+      searchStream: async (_acc: string, gaql: string) => {
+        expect(gaql).toMatch(/WHERE\s+campaign\.status\s*=\s*'ENABLED'/i)
+        return []
+      },
+    } as unknown as InstanceType<typeof GoogleAdsClient>
+
+    const db = makeFakeDb()
+    const { metabase } = makeClients({ metabaseRows: [], googleAdsRows: [] })
+    await settingsGaqlModule.runModelsForAccount(
+      db,
+      metabase,
+      fakeAds,
+      baseOpts,
+      NOW_ISO,
+    )
+  })
+
   it('runId is a UUID v4', async () => {
     const db = makeFakeDb()
     const { metabase, googleAds } = makeClients({

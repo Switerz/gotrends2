@@ -63,6 +63,11 @@ export interface RunResult {
    *  is normal — it shows that operator engagement decayed and we're cycling
    *  fresh decisions. Persistent high counts hint at a saturated Chat queue. */
   nExpiredStale: number
+  /** Campaigns dropped because their current Google Ads status is not
+   *  `ENABLED` (paused, removed, or unknown). Primary filter is the GAQL
+   *  WHERE clause; this counter catches edge cases where the Metabase
+   *  daily window has historical data for a now-paused campaign. */
+  nSkippedNotEnabled: number
   errors: string[]
 }
 
@@ -131,6 +136,7 @@ export async function runModelsForAccount(
         nCampaignsScanned: 0,
         nRecommendations: 0,
         nSkippedDedup: 0,
+        nSkippedNotEnabled: 0,
         nExpiredStale,
         errors,
       }
@@ -169,11 +175,22 @@ export async function runModelsForAccount(
 
     let nRecs = 0
     let nSkippedDedup = 0
+    let nSkippedNotEnabled = 0
     const nScanned = constraints.length
     // Reuse the same repo instance the expire-sweep created.
     const recsRepo = recsRepoForExpire
     for (const row of constraints) {
       try {
+        // Defence-in-depth filter: even with the GAQL WHERE clause, a
+        // historical Metabase row for a now-paused campaign could slip
+        // through with `campaign_status` either undefined (no settings
+        // join match — campaign no longer in Google Ads) or != 'ENABLED'.
+        // Either way, drop it before we even try to build a candidate.
+        const status = (row as { campaign_status?: unknown }).campaign_status
+        if (status !== 'ENABLED') {
+          nSkippedNotEnabled++
+          continue
+        }
         const candidate = buildCandidate(row, opts.accountId)
         if (candidate === null) continue
         // Dedup gate: one in-flight rec per campaign. If a non-terminal rec
@@ -218,6 +235,7 @@ export async function runModelsForAccount(
       nCampaignsScanned: nScanned,
       nRecommendations: nRecs,
       nSkippedDedup,
+      nSkippedNotEnabled,
       nExpiredStale,
       errors,
     }
@@ -229,6 +247,7 @@ export async function runModelsForAccount(
       nCampaignsScanned: 0,
       nRecommendations: 0,
       nSkippedDedup: 0,
+      nSkippedNotEnabled: 0,
       nExpiredStale: 0,
       errors: [(e as Error).message ?? String(e)],
     }
@@ -336,12 +355,19 @@ function buildSettingsGaql(): string {
   // (ENABLED / LEARNING_* / LIMITED_* / MISCONFIGURED_*). Required by the
   // learning-phase guardrail; absent values fall through to `unknown` and the
   // guardrail does not fire. See agent/refiners/biddingLearning.ts.
+  // `WHERE campaign.status = ENABLED` filters out PAUSED and REMOVED
+  // campaigns at the source — we never want to recommend changes on a
+  // campaign that isn't serving. Defence-in-depth: the pipeline also
+  // re-checks `campaign_status === 'ENABLED'` before building a candidate
+  // (catches cases where the campaign was active in the Metabase window but
+  // is paused now).
   return `
     SELECT campaign.id, campaign.name, campaign.status, campaign.bidding_strategy_type,
            campaign.bidding_strategy_system_status,
            campaign_budget.resource_name, campaign_budget.amount_micros,
            campaign.maximize_conversion_value.target_roas
     FROM campaign
+    WHERE campaign.status = 'ENABLED'
   `
 }
 
