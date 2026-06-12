@@ -14,6 +14,19 @@ type Fetcher = typeof fetch
 
 const BASE_URL = 'https://api.dooki.com.br/v2'
 
+/**
+ * Days per sub-range when auto-chunking. Sized for the heaviest tenant we
+ * operate (Apice ~3.5k orders/day across all sources) so that 2 days fits
+ * comfortably under Yampi's 10k-record per-range ceiling (~7k orders).
+ * Larger windows risk truncation; smaller windows multiply the calls.
+ */
+const CHUNK_DAYS = 2
+
+/** Pause between sequential chunk requests, in ms. Yampi rate-limits
+ *  aggressive callers with 429 ("Too Many Attempts") — empirically, 250ms
+ *  per request keeps a 60-day pull (~30 chunks) under the threshold. */
+const CHUNK_DELAY_MS = 250
+
 export interface YampiClientConfig {
   /** URL slug — for Apice: `apice-cosmeticos`. */
   alias: string
@@ -87,14 +100,42 @@ export class YampiClient {
   }
 
   /**
-   * Fetch paid orders in `[fromDate, toDate]`. Auto-paginates while
-   * `has_more` is true. Returns a flat, normalised list (raw shape never
-   * leaves this method).
+   * Fetch paid orders in `[fromDate, toDate]`. Auto-paginates per single
+   * range; auto-chunks the date range when the projected order count
+   * would blow past Yampi's 10 000-record offset ceiling.
+   *
+   * The chunk size of 7 days fits Apice's volume (~950 orders/day Google
+   * Ads + ~3500/day across all sources = ~6.5k/chunk, leaving headroom)
+   * and keeps the parallel fan-out small. If another tenant has higher
+   * volume, lower the chunk size — it composes.
    *
    * Throws on non-2xx. Errors surface the status code + a snippet of the
    * response body for debugging without dumping multi-KB stacktraces.
    */
   async fetchPaidOrders(opts: FetchOrdersOptions): Promise<YampiOrder[]> {
+    const chunks = chunkDateRange(opts.fromDate, opts.toDate, CHUNK_DAYS)
+    if (chunks.length === 1) {
+      return this.fetchPaidOrdersSinglePage(opts)
+    }
+    // Sequential with a small inter-chunk delay — Yampi 429s aggressive
+    // callers even with serial requests if they come back-to-back. The
+    // overall cron is non-interactive so a 250ms gap × 30 chunks (~7.5s)
+    // is fine; trying to optimise this further fights the API and loses.
+    const all: YampiOrder[] = []
+    for (let i = 0; i < chunks.length; i++) {
+      if (i > 0) await sleep(CHUNK_DELAY_MS)
+      const c = chunks[i]!
+      const list = await this.fetchPaidOrdersSinglePage({
+        fromDate: c.fromDate,
+        toDate: c.toDate,
+        limit: opts.limit,
+      })
+      all.push(...list)
+    }
+    return all
+  }
+
+  private async fetchPaidOrdersSinglePage(opts: FetchOrdersOptions): Promise<YampiOrder[]> {
     const limit = opts.limit ?? 100
     const all: YampiOrder[] = []
     let page = 1
@@ -178,6 +219,47 @@ interface YampiOrderRaw {
   utm_campaign?: string | null
   utm_term?: string | null
   utm_content?: string | null
+}
+
+/**
+ * Split `[from, to]` (inclusive, `YYYY-MM-DD`) into consecutive
+ * sub-ranges of at most `chunkDays` days each. Returns `[{from, to}, …]`
+ * sorted oldest-first. Sub-ranges are also inclusive — the helper makes
+ * sure no day is covered twice.
+ *
+ * Boundary calculation in pure date math (no Date arithmetic that would
+ * sneak in TZ surprises) — both inputs and outputs are `YYYY-MM-DD`.
+ */
+export function chunkDateRange(
+  fromDate: string,
+  toDate: string,
+  chunkDays: number,
+): Array<{ fromDate: string; toDate: string }> {
+  if (chunkDays <= 0) {
+    throw new Error(`chunkDateRange: chunkDays must be > 0, got ${chunkDays}`)
+  }
+  const fromMs = Date.parse(`${fromDate}T00:00:00Z`)
+  const toMs = Date.parse(`${toDate}T00:00:00Z`)
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    throw new Error(`chunkDateRange: invalid date(s) ${fromDate}..${toDate}`)
+  }
+  if (toMs < fromMs) {
+    throw new Error(`chunkDateRange: toDate before fromDate (${fromDate} > ${toDate})`)
+  }
+  const out: Array<{ fromDate: string; toDate: string }> = []
+  const dayMs = 24 * 3600 * 1000
+  for (let cursor = fromMs; cursor <= toMs; cursor += chunkDays * dayMs) {
+    const endMs = Math.min(cursor + (chunkDays - 1) * dayMs, toMs)
+    out.push({
+      fromDate: new Date(cursor).toISOString().slice(0, 10),
+      toDate: new Date(endMs).toISOString().slice(0, 10),
+    })
+  }
+  return out
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function normaliseOrder(raw: YampiOrderRaw): YampiOrder {

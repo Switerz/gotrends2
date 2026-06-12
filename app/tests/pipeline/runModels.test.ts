@@ -306,12 +306,8 @@ describe('runModelsForAccount', () => {
     const daily = loadDailyFixture() as Record<string, unknown>[]
 
     // First run: generate recs normally.
-    const first = await runModelsForAccount(
-      db,
-      ...Object.values(makeClients({ metabaseRows: daily, googleAdsRows: fakeAdsSettings() })),
-      baseOpts,
-      NOW_ISO,
-    )
+    const c1 = makeClients({ metabaseRows: daily, googleAdsRows: fakeAdsSettings() })
+    const first = await runModelsForAccount(db, c1.metabase, c1.googleAds, baseOpts, NOW_ISO)
     expect(first.nRecommendations).toBeGreaterThan(0)
 
     // Simulate operator rejecting every rec from that run + backdate
@@ -328,12 +324,8 @@ describe('runModelsForAccount', () => {
 
     // Second run: pipeline emits the SAME candidates (same fixture, same
     // change_percent default of 0.10) — cooldown should block them all.
-    const second = await runModelsForAccount(
-      db,
-      ...Object.values(makeClients({ metabaseRows: daily, googleAdsRows: fakeAdsSettings() })),
-      baseOpts,
-      NOW_ISO,
-    )
+    const c2 = makeClients({ metabaseRows: daily, googleAdsRows: fakeAdsSettings() })
+    const second = await runModelsForAccount(db, c2.metabase, c2.googleAds, baseOpts, NOW_ISO)
     expect(second.status).toBe('success')
     expect(second.nRecommendations).toBe(0)
     expect(second.nSkippedRejectionCooldown).toBe(first.nRecommendations)

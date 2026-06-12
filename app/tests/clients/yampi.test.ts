@@ -6,7 +6,7 @@
 // a wrapped { date } object.
 
 import { describe, it, expect, vi } from 'vitest'
-import { YampiClient } from '@/clients/yampi'
+import { YampiClient, chunkDateRange } from '@/clients/yampi'
 
 const CFG = {
   alias: 'apice-cosmeticos',
@@ -25,14 +25,15 @@ describe('YampiClient.fetchPaidOrders', () => {
   it('sends User-Token + User-Secret-Key headers + status_alias=paid + date range, no extra includes', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => jsonResponse({ data: [] }))
     const c = new YampiClient(CFG, fetcher)
-    await c.fetchPaidOrders({ fromDate: '2026-06-01', toDate: '2026-06-12' })
+    // Single-day range stays inside one chunk so we get exactly one fetch.
+    await c.fetchPaidOrders({ fromDate: '2026-06-12', toDate: '2026-06-12' })
 
     expect(fetcher).toHaveBeenCalledOnce()
     const [url, init] = fetcher.mock.calls[0]!
     const urlStr = String(url)
     expect(urlStr).toContain('https://api.dooki.com.br/v2/apice-cosmeticos/orders')
     expect(urlStr).toContain('status_alias=paid')
-    expect(urlStr).toContain('date_min=2026-06-01')
+    expect(urlStr).toContain('date_min=2026-06-12')
     expect(urlStr).toContain('date_max=2026-06-12')
     // We rely on the default projection — adding ?include= would bloat the
     // payload with cart/items/customer that we don't read.
@@ -65,7 +66,7 @@ describe('YampiClient.fetchPaidOrders', () => {
       }),
     )
     const c = new YampiClient(CFG, fetcher)
-    const orders = await c.fetchPaidOrders({ fromDate: '2026-06-10', toDate: '2026-06-12' })
+    const orders = await c.fetchPaidOrders({ fromDate: '2026-06-12', toDate: '2026-06-12' })
     expect(orders).toEqual([
       {
         id: 164823846,
@@ -130,9 +131,9 @@ describe('YampiClient.fetchPaidOrders', () => {
     expect(orders[0]?.createdAt).toBeNull()
   })
 
-  it('paginates — keeps fetching until a short page', async () => {
-    // Page 1: 100 orders (limit) → fetch page 2
-    // Page 2: 30 orders (short) → stop
+  it('paginates within a chunk — keeps fetching pages until a short page', async () => {
+    // Single-day range keeps the chunker at exactly one chunk so we can
+    // observe pure pagination behaviour.
     const fullPage = Array.from({ length: 100 }, (_, i) => ({
       id: i + 1,
       value_total: 10,
@@ -145,7 +146,7 @@ describe('YampiClient.fetchPaidOrders', () => {
     fetcher.mockResolvedValueOnce(jsonResponse({ data: fullPage }))
     fetcher.mockResolvedValueOnce(jsonResponse({ data: shortPage }))
     const c = new YampiClient(CFG, fetcher)
-    const orders = await c.fetchPaidOrders({ fromDate: '2026-06-01', toDate: '2026-06-30' })
+    const orders = await c.fetchPaidOrders({ fromDate: '2026-06-12', toDate: '2026-06-12' })
 
     expect(fetcher).toHaveBeenCalledTimes(2)
     expect(orders).toHaveLength(130)
@@ -176,5 +177,65 @@ describe('YampiClient.fetchPaidOrders', () => {
     const c = new YampiClient(CFG, fetcher)
     await c.fetchPaidOrders({ fromDate: '2026-06-10', toDate: '2026-06-10', limit: 25 })
     expect(String(fetcher.mock.calls[0]![0])).toContain('limit=25')
+  })
+
+  it('auto-chunks ranges that span beyond CHUNK_DAYS — multiple sequential fetches', async () => {
+    // 6-day window, CHUNK_DAYS=2 → 3 chunks.
+    const fetcher = vi.fn<typeof fetch>(async () => jsonResponse({ data: [] }))
+    const c = new YampiClient(CFG, fetcher)
+    await c.fetchPaidOrders({ fromDate: '2026-06-07', toDate: '2026-06-12' })
+
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    const dateMins = fetcher.mock.calls.map((call) => {
+      const u = new URL(String(call[0]))
+      return u.searchParams.get('date_min')
+    })
+    expect(dateMins).toEqual([
+      '2026-06-07',
+      '2026-06-09',
+      '2026-06-11',
+    ])
+  })
+
+  it('single-day or single-chunk range → no extra fan-out', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => jsonResponse({ data: [] }))
+    const c = new YampiClient(CFG, fetcher)
+    await c.fetchPaidOrders({ fromDate: '2026-06-12', toDate: '2026-06-12' })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('chunkDateRange', () => {
+  it('splits a 6-day window into 3 chunks of ≤2 days each (chunkDays=2)', () => {
+    const chunks = chunkDateRange('2026-06-07', '2026-06-12', 2)
+    expect(chunks).toEqual([
+      { fromDate: '2026-06-07', toDate: '2026-06-08' },
+      { fromDate: '2026-06-09', toDate: '2026-06-10' },
+      { fromDate: '2026-06-11', toDate: '2026-06-12' },
+    ])
+  })
+
+  it('returns a single chunk when the range fits within chunkDays', () => {
+    expect(chunkDateRange('2026-06-12', '2026-06-12', 7)).toEqual([
+      { fromDate: '2026-06-12', toDate: '2026-06-12' },
+    ])
+    expect(chunkDateRange('2026-06-08', '2026-06-12', 7)).toEqual([
+      { fromDate: '2026-06-08', toDate: '2026-06-12' },
+    ])
+  })
+
+  it('short tail when chunk size does not divide evenly', () => {
+    // 5 days, chunk=2 → 2 full chunks + 1 short (1 day)
+    expect(chunkDateRange('2026-06-08', '2026-06-12', 2)).toEqual([
+      { fromDate: '2026-06-08', toDate: '2026-06-09' },
+      { fromDate: '2026-06-10', toDate: '2026-06-11' },
+      { fromDate: '2026-06-12', toDate: '2026-06-12' },
+    ])
+  })
+
+  it('throws on invalid input — chunkDays ≤ 0, reversed range, malformed dates', () => {
+    expect(() => chunkDateRange('2026-06-01', '2026-06-14', 0)).toThrow(/chunkDays/)
+    expect(() => chunkDateRange('2026-06-14', '2026-06-01', 7)).toThrow(/before/)
+    expect(() => chunkDateRange('not-a-date', '2026-06-14', 7)).toThrow(/invalid/)
   })
 })
