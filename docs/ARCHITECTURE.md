@@ -85,20 +85,26 @@ gotrends2/
 │   │   │   │   └── decisionBacktest.ts
 │   │   │   ├── refiners/             ← ★ GATE DE INTEGRIDADE: candidate → DB-ready
 │   │   │   │   ├── schema.ts         ← Zod: CandidateSchema, RecommendationSchema
-│   │   │   │   ├── refine.ts         ← validate → enrich → guardrail → validate
+│   │   │   │   ├── refine.ts         ← validate → enrich → guardrail chain → validate
 │   │   │   │   ├── enrich.ts         ← derivações (proposed_budget, change_percent, cos)
-│   │   │   │   ├── guardrails.ts     ← regras finais (ports constraints_optimizer)
+│   │   │   │   ├── guardrails.ts     ← base + soft caps + mergeVerdicts (see docs/GUARDRAILS.md)
+│   │   │   │   ├── troasDrift.ts     ← DB lookup do drift cumulativo (queries executions ⋈ recs)
+│   │   │   │   ├── biddingLearning.ts ← classifier Google Ads enum → 4-state domain
 │   │   │   │   └── llm.ts            ← opcional/futuro: LLM refina headline/reason
+│   │   │   ├── verification/         ← POST-EXECUTE VERIFICATION (see docs/VERIFICATION.md)
+│   │   │   │   └── executionVerification.ts ← GAQL state vs proposed → match/drifted/reverted
 │   │   │   └── tools/                ← capabilities the agent can call
 │   │   │       ├── runModel.ts       ← invoca um modelo
 │   │   │       ├── postToChat.ts     ← envia card
 │   │   │       ├── executeBudgetChange.ts ← chama Google Ads mutate
-│   │   │       └── persistDecision.ts ← grava em recommendations (usa refiner antes)
+│   │   │       └── persistDecision.ts ← grava em recommendations (lookup drift + refiner antes)
 │   │   │
 │   │   ├── pipeline/                 ← ORQUESTRADORES (cron handlers)
-│   │   │   ├── runModels.ts          ← daily: fetch → models → recs pending
+│   │   │   ├── runModels.ts          ← daily: fetch → models → refiner → recs pending
+│   │   │   │                            (dedup hot-state aqui antes do persistDecision)
 │   │   │   ├── sendToChat.ts         ← pending → card no Chat → sent_to_chat
 │   │   │   ├── computeOutcomes.ts    ← 24h/72h: gather actuals, set verdict
+│   │   │   ├── verifyExecutions.ts   ← (em http/routes/cron.ts) 6h: GAQL vs proposed
 │   │   │   └── weeklyDigest.ts       ← gera markdown semanal
 │   │   │
 │   │   ├── http/                     ← BOUNDARY HTTP (Hono router)

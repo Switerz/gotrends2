@@ -56,10 +56,15 @@ Detalhes e descobertas em `DATA_DICTIONARY.md`.
 
 ## Documentacao essencial
 
-- `docs/ARCHITECTURE.md` — estrutura canonica do repo e contratos por camada
-- `docs/plans/2026-06-10-godeploy-platform-migration.md` — plano ativo de migracao
-- `GOTRENDS_V2_MASTER_PROMPT.md` — visao mestra do produto e roadmap original
-- `DATA_DICTIONARY.md` — descobertas sobre as fontes de dados
-- `docs/METRICS_DEFINITIONS.md` e demais notas em `docs/*.md` — semantica de cada modelo
+Em ordem de relevancia para mexer no codigo hoje:
 
-Para qualquer proxima etapa: leia primeiro `docs/ARCHITECTURE.md`, depois o plano de migracao, e so entao mexa em codigo.
+- `docs/ARCHITECTURE.md` — estrutura canonica do repo e contratos por camada
+- `docs/GUARDRAILS.md` — stack completo de guardrails do worker TS (hard block, soft caps, learning phase, dedup)
+- `docs/VERIFICATION.md` — post-execute verification (cron 6h, GAQL vs proposed)
+- `docs/SESSION_2026-06-12.md` — registro da ultima sessao de hardening
+- `DATA_DICTIONARY.md` — descobertas sobre as fontes de dados Metabase
+- `docs/METRICS_DEFINITIONS.md` e demais notas em `docs/*.md` — semantica de cada modelo
+- `GOTRENDS_V2_MASTER_PROMPT.md` — visao mestra do produto e roadmap original
+- `docs/plans/2026-06-10-godeploy-platform-migration.md` — plano da migracao concluida
+
+Para qualquer proxima etapa: leia primeiro `docs/ARCHITECTURE.md`, depois `docs/GUARDRAILS.md` (se mexer em refiners) ou `docs/VERIFICATION.md` (se mexer em verification), e so entao mexa em codigo.
