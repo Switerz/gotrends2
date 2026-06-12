@@ -25,6 +25,8 @@ import {
   type BiddingLearningStatus,
 } from '@/agent/refiners/biddingLearning'
 import { RECOMMENDATION_STALE_HOURS } from '@/core/constants'
+import { applyRevenueOverlay, type RevenueOverlayResult } from './revenueOverlay'
+import type { Env } from '@/index'
 import { uuid } from '@/lib/uuid'
 import { leftJoin } from '@/lib/df'
 import { buildBaselineTrendFeatures } from '@/models/baselineTrend'
@@ -68,16 +70,28 @@ export interface RunResult {
    *  WHERE clause; this counter catches edge cases where the Metabase
    *  daily window has historical data for a now-paused campaign. */
   nSkippedNotEnabled: number
+  /** Revenue overlay telemetry. Surfaces how many daily rows had the
+   *  Google-Ads `conversion_value` proxy replaced with ground-truth
+   *  revenue from the configured e-commerce provider (Yampi today).
+   *  Zero values either mean no provider configured or the fetch failed
+   *  — both fall back to the proxy. */
+  revenueOverlay: RevenueOverlayResult
   errors: string[]
 }
 
-/** Run the full model pipeline for one account, persisting recommendations. */
+/** Run the full model pipeline for one account, persisting recommendations.
+ *
+ *  `env` is forwarded to the revenue-overlay step so it can resolve the
+ *  configured e-commerce provider's credentials. Pass `null` to skip the
+ *  overlay (used by tests that don't have an Env binding handy — the
+ *  pipeline still runs end-to-end on the proxy). */
 export async function runModelsForAccount(
   db: GodeployDB,
   metabase: MetabaseClient,
   googleAds: GoogleAdsClient,
   opts: RunOptions,
   nowIso: string,
+  env: Env | null = null,
 ): Promise<RunResult> {
   const runId = uuid()
   const windowDays = opts.windowDays ?? 60
@@ -113,6 +127,15 @@ export async function runModelsForAccount(
     )
     const settings = parseSettings(settingsRaw)
 
+    // Real-revenue overlay: replace conversion_value (Google Ads proxy) with
+    // the e-commerce ground truth where we have a (date, campaign_name)
+    // match. Failure is non-fatal — we keep the proxy and log the cause.
+    // The overlay runs BEFORE the baseline/elasticity models so every
+    // downstream calculation sees the corrected figure.
+    const revenueOverlay = env
+      ? await applyRevenueOverlay(env, opts.accountId, daily, windowStart, windowEnd)
+      : { nOrdersFetched: 0, nOrdersFromGoogleAds: 0, nOrdersWithoutCampaign: 0, nRowsOverridden: 0, realRevenueBrlTotal: 0 }
+
     // Auto-expire unengaged recs older than the stale window BEFORE the
     // dedup gate runs. This is what allows a fresh run to overwrite an
     // ignored rec for the same campaign — the user's design call: "if it
@@ -138,6 +161,7 @@ export async function runModelsForAccount(
         nSkippedDedup: 0,
         nSkippedNotEnabled: 0,
         nExpiredStale,
+        revenueOverlay,
         errors,
       }
     }
@@ -237,6 +261,7 @@ export async function runModelsForAccount(
       nSkippedDedup,
       nSkippedNotEnabled,
       nExpiredStale,
+      revenueOverlay,
       errors,
     }
   } catch (e) {
@@ -249,6 +274,13 @@ export async function runModelsForAccount(
       nSkippedDedup: 0,
       nSkippedNotEnabled: 0,
       nExpiredStale: 0,
+      revenueOverlay: {
+        nOrdersFetched: 0,
+        nOrdersFromGoogleAds: 0,
+        nOrdersWithoutCampaign: 0,
+        nRowsOverridden: 0,
+        realRevenueBrlTotal: 0,
+      },
       errors: [(e as Error).message ?? String(e)],
     }
   }

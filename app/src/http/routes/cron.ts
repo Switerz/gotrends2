@@ -109,6 +109,7 @@ export async function runModelsForAllAccounts(env: Env): Promise<
           windowDays: 60,
         },
         nowIso,
+        env,
       )
       results.push({ accountId: acc.account_id, ...r })
     } catch (e) {

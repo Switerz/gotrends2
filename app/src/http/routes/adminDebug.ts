@@ -70,6 +70,31 @@ adminDebugRouter.get('/executions/:recommendationId', async (c) => {
   return c.json({ recommendationId: id, executions: out })
 })
 
+// GET /api/admin/debug/campaigns
+//
+// Returns DISTINCT (campaign_id, campaign_name) from recommendations so we
+// can audit what the pipeline has been seeing without hitting Google Ads.
+// Useful for matching exercises (e.g. cross-reference Yampi utm_campaign
+// against actual campaign names).
+adminDebugRouter.get('/campaigns', async (c) => {
+  const { columns, rows } = await c.env.DB.query(
+    `SELECT DISTINCT campaign_id, campaign_name FROM recommendations
+     ORDER BY campaign_name`,
+    [],
+  )
+  const out = rows.map((r) => {
+    if (Array.isArray(r)) {
+      const obj: Record<string, unknown> = {}
+      columns.forEach((col, i) => {
+        obj[col] = (r as unknown[])[i]
+      })
+      return obj
+    }
+    return r as Record<string, unknown>
+  })
+  return c.json({ count: out.length, campaigns: out })
+})
+
 // GET /api/admin/debug/counts
 //
 // Returns COUNT(*) for every well-known table so we can spot empty seed

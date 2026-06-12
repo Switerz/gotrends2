@@ -105,7 +105,16 @@ export class YampiClient {
     // No `include=...` needed: utm_* + value_total + created_at are all
     // top-level fields in the default projection. Adding includes would
     // bloat the payload with cart/items/customer/etc. that we don't use.
-    for (; page <= 50; page++) {
+    //
+    // Yampi enforces a HARD ceiling of 10 000 records per range (any page
+    // whose offset = (page-1) × limit ≥ 10 000 returns
+    // `400 {"message":"Maximum limit is 10000"}`). With limit=100 that
+    // bottoms out at exactly 100 pages, which is our cap here. If a range
+    // really has > 10k orders, the operator must split the window — we
+    // log loudly when the cap clips so it doesn't go unnoticed.
+    const MAX_PAGES = 100
+    let hitCap = false
+    for (; page <= MAX_PAGES; page++) {
       const url =
         `${BASE_URL}/${this.config.alias}/orders` +
         `?status_alias=paid` +
@@ -122,6 +131,22 @@ export class YampiClient {
       const data = body.data ?? []
       for (const raw of data) all.push(normaliseOrder(raw))
       if (data.length < limit) break // last page
+      if (page === MAX_PAGES) hitCap = true
+    }
+    if (hitCap) {
+      // Loud log so operators see when the pagination ceiling clipped data.
+      // Not thrown — we still return the partial set so the pipeline runs.
+      console.log(
+        JSON.stringify({
+          event: 'yampi_pagination_cap_hit',
+          alias: this.config.alias,
+          maxPages: MAX_PAGES,
+          limit,
+          ordersReturned: all.length,
+          fromDate: opts.fromDate,
+          toDate: opts.toDate,
+        }),
+      )
     }
     return all
   }
