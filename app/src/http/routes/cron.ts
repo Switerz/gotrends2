@@ -29,6 +29,7 @@ import { ExecutionsRepo } from '@/db/repos/executions'
 import { verifyExecution } from '@/agent/verification/executionVerification'
 import { computeTroasDrift } from '@/agent/refiners/troasDrift'
 import { syncRevenueIncremental, syncRevenueRange } from '@/pipeline/revenueSync'
+export { syncRevenueRange } from '@/pipeline/revenueSync'
 import {
   MAX_DAILY_TROAS_DRIFT,
   MAX_TROAS_DRIFT_7D,

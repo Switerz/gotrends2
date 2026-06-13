@@ -43,11 +43,27 @@ adminTriggerRouter.post('/verify-executions', async (c) =>
 adminTriggerRouter.post('/sync-revenue', async (c) =>
   c.json(await syncRevenueAllAccounts(c.env)),
 )
-// POST /api/admin/trigger/backfill-revenue?accountId=X&days=60
+// POST /api/admin/trigger/backfill-revenue
+//   ?accountId=X
+//   AND either:
+//     - ?days=60   (walks back from today)
+//     - ?fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD  (explicit range)
+//
+// Use explicit range when you want to backfill one day at a time from a
+// shell loop — avoids the worker getting killed by client timeout on
+// a 60-day single call.
 adminTriggerRouter.post('/backfill-revenue', async (c) => {
   const accountId = c.req.query('accountId')
   if (!accountId) {
     return c.json({ error: 'missing accountId query param' }, 400)
+  }
+  const fromDate = c.req.query('fromDate')
+  const toDate = c.req.query('toDate')
+  if (fromDate && toDate) {
+    const { syncRevenueRange } = await import('./cron')
+    return c.json(
+      await syncRevenueRange(c.env, c.env.DB, accountId, fromDate, toDate),
+    )
   }
   const daysRaw = c.req.query('days')
   const days = daysRaw ? Math.max(1, Math.min(365, Number(daysRaw))) : 60

@@ -65,6 +65,39 @@ Contas que não estão no mapa caem no proxy de Google Ads (compat).
 
 API: `https://api.dooki.com.br/v2/{alias}/...`
 
+**⚠️ Limitação da API (validada em 2026-06-13):**
+
+Os parâmetros `date_min` e `date_max` no endpoint `/orders` são **silenciosamente
+ignorados**. Yampi sempre devolve um stream cronológico DESC dos últimos ~10k
+orders, independente do filtro de data enviado. Tentativas testadas (todas sem
+efeito):
+
+```
+date_min, date_max
+created_at_min, created_at_max
+date_created_min, date_created_max
+filter[created_at_gte], filter[created_at_lte]
+q[created_at_gteq], q[created_at_lteq]  ← retornam 500
+```
+
+**Implicação para backfill:** a única forma de cobrir histórico via REST é
+percorrer páginas até bater o cap de 10k records. Para Apice (~3.5k orders/dia
+em todas as fontes), isso cobre apenas ~3 dias por chamada. Backfill profundo
+de 60 dias **não é viável** pela API atual.
+
+**Estratégia operacional:**
+
+1. Sync noturno (`/cron/sync-revenue` 03:00 UTC) escreve a "fatia mais
+   recente" no cache local. Mesmo se o filter funcionasse, o cap de 10k
+   limita a leitura.
+2. A cache `campaign_revenue_daily` **acumula organicamente** — cada noite
+   adiciona 1+ dia novo. Em 60 noites teremos cobertura completa do baseline
+   de 60d que o pipeline usa.
+3. Pipeline opera com cobertura parcial até lá (proxy fallback nos dias sem
+   cache).
+4. **Para backfill instantâneo, considerar Yampi webhooks** (push em vez de
+   pull) — fora de escopo desta iteração.
+
 **Auth (headers obrigatórios):**
 
 ```http

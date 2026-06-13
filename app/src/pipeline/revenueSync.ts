@@ -31,8 +31,11 @@ const SYNC_CHUNK_DAYS = 1
 /** Max retry attempts per chunk on 429 (Too Many Attempts). */
 const MAX_RETRIES = 3
 
-/** Initial backoff between retries; doubles each attempt. */
-const RETRY_BACKOFF_MS = 1500
+/** Initial backoff between retries; doubles each attempt.
+ *  Sequence with MAX_RETRIES=3 → 2s, 4s, 8s = 14s total per chunk. Sized
+ *  for the nightly incremental sync (small windows; aggressive retry not
+ *  needed since each call only fetches ~1 day worth of data). */
+const RETRY_BACKOFF_MS = 2000
 
 export interface RevenueSyncResult {
   accountId: string

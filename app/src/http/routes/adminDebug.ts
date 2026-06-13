@@ -95,6 +95,50 @@ adminDebugRouter.get('/campaigns', async (c) => {
   return c.json({ count: out.length, campaigns: out })
 })
 
+// GET /api/admin/debug/revenue-cache
+//
+// Quick visibility into campaign_revenue_daily — total rows, distinct dates,
+// per-day count for the last 60 days. Used to confirm a backfill landed.
+adminDebugRouter.get('/revenue-cache', async (c) => {
+  const accountId = c.req.query('accountId') ?? '7705857660'
+  const total = await c.env.DB.query(
+    `SELECT COUNT(*) AS n FROM campaign_revenue_daily WHERE account_id = ?`,
+    [accountId],
+  )
+  const byDate = await c.env.DB.query(
+    `SELECT date, COUNT(*) AS n, SUM(revenue_brl) AS total_brl
+     FROM campaign_revenue_daily
+     WHERE account_id = ?
+     GROUP BY date
+     ORDER BY date DESC`,
+    [accountId],
+  )
+  const totalRow = total.rows[0] as unknown
+  const totalN = Array.isArray(totalRow)
+    ? Number((totalRow as unknown[])[0] ?? 0)
+    : Number((totalRow as Record<string, unknown>)?.['n'] ?? 0)
+  const dateIdx = byDate.columns.indexOf('date')
+  const nIdx = byDate.columns.indexOf('n')
+  const totalIdx = byDate.columns.indexOf('total_brl')
+  const dates = byDate.rows.map((r) => {
+    if (Array.isArray(r)) {
+      const arr = r as unknown[]
+      return {
+        date: String(arr[dateIdx]),
+        rows: Number(arr[nIdx]),
+        totalBrl: Number(arr[totalIdx]),
+      }
+    }
+    const obj = r as Record<string, unknown>
+    return {
+      date: String(obj['date']),
+      rows: Number(obj['n']),
+      totalBrl: Number(obj['total_brl']),
+    }
+  })
+  return c.json({ accountId, totalRows: totalN, distinctDates: dates.length, dates })
+})
+
 // GET /api/admin/debug/counts
 //
 // Returns COUNT(*) for every well-known table so we can spot empty seed
