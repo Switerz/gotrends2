@@ -304,6 +304,10 @@ function RecommendationDetailView({ id }: { id: string | undefined }) {
                 label="COS projetado"
                 value={fmtPct(rec.expected.projectedCos)}
               />
+              <LabeledValue
+                label="ROAS observado (7d)"
+                value={fmtNumber(rec.observedRoas7d, 2)}
+              />
             </div>
           </CardBody>
         </Card>

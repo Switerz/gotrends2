@@ -229,6 +229,7 @@ export async function sendPendingToChat(env: Env): Promise<
         expectedRevenueBrl: rec.expected_incremental_revenue_brl,
         expectedCostBrl: rec.expected_incremental_cost_brl,
         marginalRoas: rec.expected_marginal_roas,
+        observedRoas7d: rec.observed_roas_7d,
         confidence: rec.confidence_score,
         risk: rec.risk_level,
         guardrailStatus: rec.guardrail_status as

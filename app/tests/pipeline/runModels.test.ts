@@ -10,7 +10,7 @@ import { readCsv, coerceNumeric } from '@/lib/csv'
 import { MetabaseClient } from '@/clients/metabase'
 import { GoogleAdsClient } from '@/clients/googleAds'
 import { isUuid } from '@/lib/uuid'
-import { runModelsForAccount, buildDailySql } from '@/pipeline/runModels'
+import { runModelsForAccount, buildDailySql, computeObservedRoas7d } from '@/pipeline/runModels'
 import { makeFakeDb } from '../db/repos/_fakeDb'
 
 const FIX = resolve(__dirname, '../fixtures/parity')
@@ -441,5 +441,76 @@ describe('runModelsForAccount', () => {
     const runs = db.tables.get('model_runs') ?? []
     expect(runs[0]!['input_window_end']).toBe('2026-06-10')
     expect(runs[0]!['input_window_start']).toBe('2026-05-31')
+  })
+})
+
+describe('computeObservedRoas7d', () => {
+  type DailyRow = Parameters<typeof computeObservedRoas7d>[0][number]
+  const row = (
+    date: string,
+    campaign_id: string,
+    cost: number,
+    conversion_value: number,
+  ): DailyRow => ({
+    date,
+    company: 'Apice',
+    campaign_id,
+    campaign_name: `Campaign ${campaign_id}`,
+    campaign_type: 'SEARCH',
+    cost,
+    conversion_value,
+    impressions: 1,
+    clicks: 1,
+    conversions: 1,
+  })
+
+  it('sums revenue and cost in the last 7d (inclusive end date) per campaign', () => {
+    const daily: DailyRow[] = [
+      row('2026-06-10', 'c1', 100, 500), // in window
+      row('2026-06-09', 'c1', 50, 200),  // in window
+      row('2026-06-04', 'c1', 25, 100),  // in window (7 days back inclusive)
+      row('2026-06-03', 'c1', 1000, 9999), // OUT — beyond 7d
+    ]
+    const got = computeObservedRoas7d(daily, '2026-06-10')
+    // c1: (500+200+100)/(100+50+25) = 800/175 ≈ 4.57
+    expect(got.get('c1')).toBeCloseTo(4.57, 2)
+  })
+
+  it('rounds to 2 decimals', () => {
+    const daily: DailyRow[] = [row('2026-06-10', 'c1', 100, 333)]
+    expect(computeObservedRoas7d(daily, '2026-06-10').get('c1')).toBe(3.33)
+  })
+
+  it('returns null for campaigns whose 7d cost is zero (no division by zero)', () => {
+    // Campaign with revenue but no cost in window
+    const daily: DailyRow[] = [row('2026-06-10', 'c-free', 0, 500)]
+    expect(computeObservedRoas7d(daily, '2026-06-10').get('c-free')).toBeNull()
+  })
+
+  it('separates campaigns — c1 and c2 each get their own ROAS', () => {
+    const daily: DailyRow[] = [
+      row('2026-06-10', 'c1', 100, 500),
+      row('2026-06-10', 'c2', 100, 250),
+    ]
+    const got = computeObservedRoas7d(daily, '2026-06-10')
+    expect(got.get('c1')).toBe(5.0)
+    expect(got.get('c2')).toBe(2.5)
+  })
+
+  it('excludes data outside the 7-day window', () => {
+    // 8 days back should NOT be included
+    const daily: DailyRow[] = [
+      row('2026-06-02', 'c1', 100, 9999), // 8d back — outside
+    ]
+    expect(computeObservedRoas7d(daily, '2026-06-10').get('c1')).toBeUndefined()
+  })
+
+  it('skips rows with non-numeric cost / revenue', () => {
+    const daily = [
+      // @ts-expect-error — testing defensive null handling
+      { date: '2026-06-10', campaign_id: 'c1', cost: null, conversion_value: null },
+      row('2026-06-10', 'c1', 100, 500),
+    ] as DailyRow[]
+    expect(computeObservedRoas7d(daily, '2026-06-10').get('c1')).toBe(5.0)
   })
 })

@@ -18,6 +18,7 @@ export interface RecommendationDTO {
     marginalRoas: number | null
     projectedCos: number | null
   }
+  observedRoas7d: number | null
   confidence: number | null
   risk: string | null
   guardrail: { status: string; reason: string | null }

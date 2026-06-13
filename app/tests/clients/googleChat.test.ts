@@ -179,6 +179,25 @@ describe('buildRecommendationCard', () => {
     expect(textOf(build({ risk: 'unknown_tier' }), 'Risco')).toBe('unknown_tier')
   })
 
+  it('renders the ROAS observado (7d) widget when observedRoas7d is supplied', () => {
+    const card = build({ observedRoas7d: 4.2 })
+    expect(textOf(card, 'ROAS observado (7d)')).toBe('4,20')
+  })
+
+  it('omits the ROAS observado widget when observedRoas7d is null or undefined', () => {
+    const cardNull = build({ observedRoas7d: null })
+    const widgetNull = widgetsOf(cardNull).find(
+      (w) => w.decoratedText?.topLabel === 'ROAS observado (7d)',
+    )
+    expect(widgetNull).toBeUndefined()
+
+    const cardUndef = build({})
+    const widgetUndef = widgetsOf(cardUndef).find(
+      (w) => w.decoratedText?.topLabel === 'ROAS observado (7d)',
+    )
+    expect(widgetUndef).toBeUndefined()
+  })
+
   it('renders the tROAS caps widget when a drift snapshot is provided', () => {
     // Operator-facing context for tROAS approvals via Chat — proves the
     // widget shows consumption + dot indicator + formatted percentages.

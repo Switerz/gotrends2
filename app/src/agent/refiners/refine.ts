@@ -92,6 +92,7 @@ export function refine(rawCandidate: unknown, ctx: RefineContext): Recommendatio
     // Normalise undefined → null so the DB row shape never carries a
     // missing-field hole that callers would have to defend against.
     budget_resource_name: c.budget_resource_name ?? null,
+    observed_roas_7d: c.observed_roas_7d ?? null,
     status: 'pending',
     expires_at: null,
   }

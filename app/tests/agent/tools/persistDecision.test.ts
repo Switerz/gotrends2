@@ -74,7 +74,8 @@ describe('persistDecision', () => {
     expect(params[20]).toBeNull() // guardrail_reason
     expect(params[23]).toBeNull() // budget_resource_name (Candidate omitted it)
     expect(params[24]).toBeNull() // bidding_learning_status (Candidate omitted it)
-    expect(params[25]).toBe('pending') // status
+    expect(params[25]).toBeNull() // observed_roas_7d (Candidate omitted it)
+    expect(params[26]).toBe('pending') // status
   })
 
   it('blocked path: still inserts the row, but with guardrail_status=blocked', async () => {

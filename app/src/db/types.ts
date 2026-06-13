@@ -145,6 +145,11 @@ export interface RecommendationRow {
    *  Stored as the domain string ('stable' | 'learning' | 'limited' |
    *  'unknown'). Null on rows written before the column existed. */
   bidding_learning_status: string | null
+  /** ROAS observed for this campaign over the previous 7 days at run time —
+   *  computed by the pipeline from the post-overlay daily series. Null when
+   *  the campaign has no recent cost. Used by the card / SPA to surface
+   *  "is the proposed target achievable?". */
+  observed_roas_7d: number | null
   status: RecommendationStatus
   expires_at: string | null
   created_at: string

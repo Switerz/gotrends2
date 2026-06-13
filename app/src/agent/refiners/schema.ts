@@ -52,6 +52,13 @@ export const CandidateSchema = z.object({
     .enum(['stable', 'learning', 'limited', 'unknown'])
     .nullable()
     .optional(),
+
+  // Observed ROAS over the last 7 days for this campaign at the moment
+  // the candidate was built. Optional — skills that don't know it omit;
+  // the pipeline always supplies it. Surfaced on the card so the
+  // operator sees what the campaign is actually delivering vs the proposed
+  // target. Null when there's no recent cost to divide by.
+  observed_roas_7d: z.number().nullable().optional(),
 })
 export type Candidate = z.infer<typeof CandidateSchema>
 

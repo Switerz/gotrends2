@@ -13,6 +13,9 @@ export interface RecommendationCardInput {
   confidence: number | null
   risk: string | null
   guardrailStatus: 'ok' | 'needs_human_review' | 'blocked'
+  /** Observed ROAS over the last 7 days for the campaign at run time.
+   *  Renders as an extra widget when present; null/undefined hides it. */
+  observedRoas7d?: number | null
   /**
    * Cumulative tROAS drift snapshot for the campaign at card-build time.
    * Renders an extra widget showing consumption against both caps so the
@@ -138,6 +141,12 @@ export function buildRecommendationCard(i: RecommendationCardInput, appOrigin: s
             { decoratedText: { topLabel: 'Receita incremental esperada', text: fmtBrl(i.expectedRevenueBrl) } },
             { decoratedText: { topLabel: 'Custo incremental esperado', text: fmtBrl(i.expectedCostBrl) } },
             { decoratedText: { topLabel: 'ROAS marginal', text: i.marginalRoas !== null ? i.marginalRoas.toFixed(2).replace('.', ',') : '—' } },
+            ...(i.observedRoas7d !== undefined && i.observedRoas7d !== null ? [{
+              decoratedText: {
+                topLabel: 'ROAS observado (7d)',
+                text: i.observedRoas7d.toFixed(2).replace('.', ','),
+              },
+            }] : []),
             { decoratedText: { topLabel: 'Confiança', text: i.confidence !== null ? String(i.confidence) : '—' } },
             { decoratedText: { topLabel: 'Risco', text: i.risk ? (RISK_LABELS[i.risk] ?? i.risk) : '—' } },
             { decoratedText: { topLabel: 'Guardrail', text: GUARDRAIL_LABELS[i.guardrailStatus] ?? i.guardrailStatus } },

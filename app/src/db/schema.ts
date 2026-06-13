@@ -149,6 +149,12 @@ export const SCHEMA_STATEMENTS: string[] = [
     -- render a badge and by audit queries ("was the campaign in learning when
     -- this rec was issued?"). The pipeline writes it; nothing else updates.
     bidding_learning_status TEXT,
+    -- Observed ROAS over the last 7 days for this campaign at run time —
+    -- sum(revenue_7d) / sum(cost_7d) using the post-Yampi-overlay daily
+    -- figures. Surfaced on the card so the operator can sanity-check the
+    -- proposed target against what the campaign is actually delivering.
+    -- Null when there's no recent cost (campaign just launched / paused).
+    observed_roas_7d REAL,
     status TEXT NOT NULL CHECK (status IN (
       'pending', 'sent_to_chat', 'approved', 'rejected',
       'expired', 'executing', 'executed', 'failed'
@@ -388,6 +394,10 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     sql: `ALTER TABLE executions ADD COLUMN verified_value REAL`,
+    expectIfPresent: 'duplicate column name',
+  },
+  {
+    sql: `ALTER TABLE recommendations ADD COLUMN observed_roas_7d REAL`,
     expectIfPresent: 'duplicate column name',
   },
 ]

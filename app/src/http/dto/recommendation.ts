@@ -32,6 +32,9 @@ export interface RecommendationDTO {
     marginalRoas: number | null
     projectedCos: number | null
   }
+  /** ROAS observed in the last 7 days at run time. Null when there was no
+   *  cost in the window (campaign just launched / paused). */
+  observedRoas7d: number | null
   confidence: number | null
   risk: string | null
   guardrail: { status: string; reason: string | null }
@@ -101,6 +104,7 @@ export function toRecommendationDTO(
       marginalRoas: row.expected_marginal_roas,
       projectedCos: row.projected_cos,
     },
+    observedRoas7d: row.observed_roas_7d,
     confidence: row.confidence_score,
     risk: row.risk_level,
     guardrail: { status: row.guardrail_status, reason: row.guardrail_reason },

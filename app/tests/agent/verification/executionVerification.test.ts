@@ -45,6 +45,7 @@ function baseRec(over: Partial<RecommendationRow> = {}): RecommendationRow {
     llm_explanation: null,
     budget_resource_name: 'customers/7705857660/campaignBudgets/55555',
     bidding_learning_status: 'stable',
+    observed_roas_7d: null,
     status: 'executed',
     expires_at: null,
     created_at: '2026-06-12T00:00:00Z',

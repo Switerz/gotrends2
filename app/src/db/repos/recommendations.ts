@@ -24,8 +24,8 @@ export class RecommendationsRepo {
         confidence_score, risk_level, reason,
         guardrail_status, guardrail_reason,
         llm_payload, llm_explanation, budget_resource_name,
-        bidding_learning_status, status, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        bidding_learning_status, observed_roas_7d, status, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.recommendation_id,
         row.run_id,
@@ -52,6 +52,7 @@ export class RecommendationsRepo {
         row.llm_explanation,
         row.budget_resource_name,
         row.bidding_learning_status,
+        row.observed_roas_7d,
         row.status,
         row.expires_at,
       ],

@@ -201,6 +201,13 @@ export async function runModelsForAccount(
       >[0],
     )
 
+    // Observed 7-day ROAS per campaign, computed from the post-overlay
+    // daily series (Yampi revenue where matched, proxy fallback elsewhere).
+    // Sum revenue / sum cost over the trailing 7 days from `windowEnd`.
+    // Result feeds the chat card so the operator sees "what is the
+    // campaign actually delivering" beside the proposed target.
+    const observedRoas7dByCampaign = computeObservedRoas7d(daily, windowEnd)
+
     const latest = buildLatestDayEnriched(baseline, confidence, elasticity, settings)
     const sat = addSaturationFeatures(latest)
     const lev = addLeverDiagnosis(sat)
@@ -231,7 +238,7 @@ export async function runModelsForAccount(
           nSkippedNotEnabled++
           continue
         }
-        const candidate = buildCandidate(row, opts.accountId)
+        const candidate = buildCandidate(row, opts.accountId, observedRoas7dByCampaign)
         if (candidate === null) continue
         // Dedup gate: one in-flight rec per campaign. If a non-terminal rec
         // already exists (pending/sent_to_chat/approved/executing), the new
@@ -599,6 +606,7 @@ function buildLatestDayEnriched(
 function buildCandidate(
   row: Record<string, unknown>,
   accountId: string,
+  observedRoas7dByCampaign: Map<string, number | null>,
 ): unknown | null {
   const action = row['recommended_action']
   if (typeof action !== 'string') return null
@@ -607,9 +615,10 @@ function buildCandidate(
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? v : null
 
+  const campaignId = String(row['campaign_id'] ?? '')
   return {
     account_id: accountId,
-    campaign_id: String(row['campaign_id'] ?? ''),
+    campaign_id: campaignId,
     campaign_name: String(row['campaign_name'] ?? ''),
     skill_type: 'budget_reallocation',
     recommended_action: action,
@@ -639,7 +648,54 @@ function buildCandidate(
         ? row['budget_resource_name']
         : null,
     bidding_learning_status: pickLearningStatus(row['bidding_learning_status']),
+    observed_roas_7d: observedRoas7dByCampaign.get(campaignId) ?? null,
   }
+}
+
+/**
+ * Aggregate sum(conversion_value) / sum(cost) over the last 7 days per
+ * campaign. Uses the daily series AFTER the Yampi overlay was applied, so
+ * the ROAS reflects the ground-truth revenue (or proxy fallback) and
+ * matches what the operator would see in their ground-truth dashboard.
+ *
+ * Returns Map<campaign_id, ratio | null>. Null when there's no cost in
+ * the window (campaign just launched, paused, or has no data) — we don't
+ * surface "Infinity" or "0" ROAS, those are nonsense.
+ */
+export function computeObservedRoas7d(
+  daily: DailyRow[],
+  windowEndYmd: string,
+): Map<string, number | null> {
+  // 7-day window ending on windowEndYmd (inclusive).
+  const endMs = Date.parse(`${windowEndYmd}T00:00:00Z`)
+  const startMs = endMs - 6 * 24 * 3600 * 1000 // 7 days inclusive
+  const startYmd = new Date(startMs).toISOString().slice(0, 10)
+
+  const sums = new Map<string, { cost: number; revenue: number }>()
+  for (const row of daily) {
+    if (row.date < startYmd || row.date > windowEndYmd) continue
+    const id = String(row.campaign_id ?? '')
+    if (!id) continue
+    const cost = typeof row.cost === 'number' && Number.isFinite(row.cost) ? row.cost : 0
+    const rev =
+      typeof row.conversion_value === 'number' && Number.isFinite(row.conversion_value)
+        ? row.conversion_value
+        : 0
+    const cur = sums.get(id) ?? { cost: 0, revenue: 0 }
+    cur.cost += cost
+    cur.revenue += rev
+    sums.set(id, cur)
+  }
+
+  const out = new Map<string, number | null>()
+  for (const [id, { cost, revenue }] of sums) {
+    if (cost === 0) {
+      out.set(id, null)
+    } else {
+      out.set(id, Math.round((revenue / cost) * 100) / 100)
+    }
+  }
+  return out
 }
 
 /** Narrow an unknown into a `BiddingLearningStatus`, defaulting to `unknown`
