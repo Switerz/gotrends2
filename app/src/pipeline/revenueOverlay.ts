@@ -1,33 +1,35 @@
 // src/pipeline/revenueOverlay.ts
 //
 // Replaces the Google-Ads `conversion_value` proxy with ground-truth revenue
-// from the configured e-commerce provider (Yampi today). Two responsibilities:
+// from the LOCAL `campaign_revenue_daily` cache. The sync cron (see
+// `pipeline/revenueSync.ts`) is the only writer of that table — pipeline
+// just reads. This separation decouples pipeline latency / availability from
+// the provider's rate limits and 10k-record ceilings.
 //
-//   1. Fetch + aggregate paid orders into a (date, campaign_name) → revenue
-//      map. Pure transformation once we have the orders in hand.
-//   2. Overlay that map onto the daily Metabase rows in-place — match on
+// Two responsibilities:
+//   1. Pull rows for the run's window from the local cache.
+//   2. Overlay onto the daily Metabase rows in-place — match on
 //      (date, campaign_name); rows without a match keep the proxy as fallback.
 //
-// Failure mode is deliberate: if the Yampi fetch throws (auth, rate limit,
-// network, bad creds) the overlay returns null + logs a structured warning,
-// and the pipeline keeps running on the proxy. Better to under-attribute one
-// day than to drop the whole run.
+// Failure mode: cache miss / empty / DB error → return zeroed result + log.
+// Pipeline keeps running on the proxy. Under-attribution for one window
+// beats dropping the run.
 
-import { YampiClient } from '@/clients/yampi'
+import { CampaignRevenueRepo } from '@/db/repos/campaignRevenue'
 import { getRevenueSource } from '@/config/revenueSources'
-import type { Env } from '@/index'
+import type { GodeployDB } from '@/db/bootstrap'
 
 export interface RevenueOverlayResult {
-  /** Total orders fetched from the provider (post status_alias=paid filter). */
-  nOrdersFetched: number
-  /** Orders whose utm_source was the relevant ad platform (google for now). */
-  nOrdersFromGoogleAds: number
-  /** Orders dropped because they lacked utm_campaign (organic / direct tags). */
-  nOrdersWithoutCampaign: number
+  /** Cached (campaign, date) tuples returned from the local revenue table. */
+  nCacheRows: number
   /** Daily rows whose conversion_value was overwritten with the real figure. */
   nRowsOverridden: number
-  /** Sum of value_total across the overlay map, in BRL. Useful sanity check. */
+  /** Sum of revenue applied to the daily series, in BRL. Sanity check. */
   realRevenueBrlTotal: number
+  /** Earliest cached date returned. Null when the cache had nothing. */
+  cacheFromDate: string | null
+  /** Latest cached date returned. Null when the cache had nothing. */
+  cacheToDate: string | null
 }
 
 /** Daily row shape we mutate. The pipeline's `DailyRow` is a superset; we
@@ -41,63 +43,36 @@ export interface OverlayableRow {
 }
 
 const SKIPPED: RevenueOverlayResult = {
-  nOrdersFetched: 0,
-  nOrdersFromGoogleAds: 0,
-  nOrdersWithoutCampaign: 0,
+  nCacheRows: 0,
   nRowsOverridden: 0,
   realRevenueBrlTotal: 0,
+  cacheFromDate: null,
+  cacheToDate: null,
 }
 
 /**
- * Apply the real-revenue overlay to `daily` in-place. Returns telemetry, or
- * a zeroed result (same shape) when the account has no revenue source
- * configured / Yampi fetch failed. Never throws — the pipeline must keep
- * going on a fallback path.
- *
- * Constructed YampiClient is injectable via the optional `clientFactory`
- * so tests can mock without touching env.
+ * Apply the real-revenue overlay to `daily` in-place. Reads from the local
+ * `campaign_revenue_daily` cache — the pipeline never calls the provider.
+ * Never throws — DB miss / empty cache fall back to the proxy.
  */
 export async function applyRevenueOverlay(
-  env: Env,
+  db: GodeployDB,
   accountId: string,
   daily: OverlayableRow[],
   fromDate: string,
   toDate: string,
-  clientFactory: (
-    alias: string,
-    userToken: string,
-    userSecretKey: string,
-  ) => YampiClient = (alias, userToken, userSecretKey) =>
-    new YampiClient({ alias, userToken, userSecretKey }),
 ): Promise<RevenueOverlayResult> {
   const cfg = getRevenueSource(accountId)
   if (cfg === null) return SKIPPED
 
-  // Resolve env-var-name → value. Either credential missing → graceful skip
-  // with a structured log so operators see the misconfiguration in metrics.
-  const userToken = env[cfg.credentials.userTokenEnv] as string | undefined
-  const userSecretKey = env[cfg.credentials.userSecretKeyEnv] as string | undefined
-  if (!userToken || !userSecretKey) {
-    console.log(
-      JSON.stringify({
-        event: 'revenue_overlay_skipped_no_creds',
-        accountId,
-        provider: cfg.provider,
-        userTokenSet: Boolean(userToken),
-        userSecretKeySet: Boolean(userSecretKey),
-      }),
-    )
-    return SKIPPED
-  }
-
-  let orders
+  let rows
   try {
-    const client = clientFactory(cfg.alias, userToken, userSecretKey)
-    orders = await client.fetchPaidOrders({ fromDate, toDate })
+    const repo = new CampaignRevenueRepo(db)
+    rows = await repo.listByAccountAndDateRange(accountId, fromDate, toDate)
   } catch (e) {
     console.log(
       JSON.stringify({
-        event: 'revenue_overlay_fetch_failed',
+        event: 'revenue_overlay_cache_read_failed',
         accountId,
         provider: cfg.provider,
         error: (e as Error).message,
@@ -106,34 +81,34 @@ export async function applyRevenueOverlay(
     return SKIPPED
   }
 
-  const nOrdersFetched = orders.length
-  // Only orders attributable to Google Ads matter for our pipeline — Meta /
-  // Insider / email / organic revenue exists but doesn't belong to a Google
-  // Ads campaign we'd recommend changes on.
-  const googleOrders = orders.filter((o) => o.utm.source === 'google')
-  const withCampaign = googleOrders.filter((o) => o.utm.campaign !== null)
-  const nOrdersFromGoogleAds = googleOrders.length
-  const nOrdersWithoutCampaign = googleOrders.length - withCampaign.length
-
-  // Aggregate (date, utm_campaign) → sum(value_total).
-  // utm_campaign is matched against the Google Ads campaign.name (see
-  // docs/REVENUE_SOURCES.md — the traffic team convention is
-  // utm_campaign == campaign.name, validated against the live API on
-  // 2026-06-12 with 100 % exact match).
-  const revenueByKey = new Map<string, number>()
-  for (const o of withCampaign) {
-    const day = o.createdAt?.slice(0, 10)
-    if (!day) continue
-    const key = `${day}|${o.utm.campaign}`
-    revenueByKey.set(key, (revenueByKey.get(key) ?? 0) + o.totalBrl)
+  if (rows.length === 0) {
+    console.log(
+      JSON.stringify({
+        event: 'revenue_overlay_cache_empty',
+        accountId,
+        provider: cfg.provider,
+        fromDate,
+        toDate,
+      }),
+    )
+    return SKIPPED
   }
 
-  // Overlay onto daily rows.
+  // Build a (date|campaign_name) → revenue map. Cache rows are already the
+  // aggregated truth; no extra summation needed.
+  const revenueByKey = new Map<string, number>()
+  let cacheFromDate: string | null = null
+  let cacheToDate: string | null = null
+  for (const r of rows) {
+    if (cacheFromDate === null || r.date < cacheFromDate) cacheFromDate = r.date
+    if (cacheToDate === null || r.date > cacheToDate) cacheToDate = r.date
+    revenueByKey.set(`${r.date}|${r.campaign_name}`, r.revenue_brl)
+  }
+
   let nRowsOverridden = 0
   let realRevenueBrlTotal = 0
   for (const row of daily) {
-    const key = `${row.date}|${row.campaign_name}`
-    const real = revenueByKey.get(key)
+    const real = revenueByKey.get(`${row.date}|${row.campaign_name}`)
     if (real === undefined) continue
     row.conversion_value = round2(real)
     nRowsOverridden++
@@ -148,20 +123,18 @@ export async function applyRevenueOverlay(
       provider: cfg.provider,
       fromDate,
       toDate,
-      nOrdersFetched,
-      nOrdersFromGoogleAds,
-      nOrdersWithoutCampaign,
+      nCacheRows: rows.length,
       nRowsOverridden,
       realRevenueBrlTotal,
     }),
   )
 
   return {
-    nOrdersFetched,
-    nOrdersFromGoogleAds,
-    nOrdersWithoutCampaign,
+    nCacheRows: rows.length,
     nRowsOverridden,
     realRevenueBrlTotal,
+    cacheFromDate,
+    cacheToDate,
   }
 }
 

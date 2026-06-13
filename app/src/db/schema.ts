@@ -239,7 +239,28 @@ export const SCHEMA_STATEMENTS: string[] = [
   )`,
 
   // ---------------------------------------------------------------------------
-  // 11. skills (catalog of capabilities the agent can dispatch)
+  // 11. campaign_revenue_daily
+  //
+  // Pre-aggregated revenue per (account, campaign_name, date) sourced from the
+  // configured e-commerce provider (Yampi today). Populated by the sync cron
+  // — pipeline reads from here, never from the provider directly. Decouples
+  // pipeline latency / availability from the provider's rate limits and
+  // 10k-record ceilings. `campaign_name` matches `utm_campaign` on the
+  // provider side and `campaign.name` on the Google Ads side.
+  // ---------------------------------------------------------------------------
+  `CREATE TABLE IF NOT EXISTS campaign_revenue_daily (
+    account_id TEXT NOT NULL REFERENCES accounts(account_id),
+    campaign_name TEXT NOT NULL,
+    date TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    revenue_brl REAL NOT NULL,
+    n_orders INTEGER NOT NULL,
+    synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (account_id, campaign_name, date)
+  )`,
+
+  // ---------------------------------------------------------------------------
+  // 12. skills (catalog of capabilities the agent can dispatch)
   // ---------------------------------------------------------------------------
   `CREATE TABLE IF NOT EXISTS skills (
     skill_key TEXT PRIMARY KEY,
@@ -286,6 +307,11 @@ export const SCHEMA_STATEMENTS: string[] = [
 
   `CREATE INDEX IF NOT EXISTS idx_outcomes_recommendation
      ON execution_outcomes (recommendation_id)`,
+
+  // Covers the most-recent-date-per-account lookup the sync cron uses to
+  // decide where to resume incremental fills.
+  `CREATE INDEX IF NOT EXISTS idx_campaign_revenue_account_date
+     ON campaign_revenue_daily (account_id, date DESC)`,
 
   // ---------------------------------------------------------------------------
   // View: agent_decision_log

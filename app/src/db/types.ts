@@ -156,6 +156,21 @@ export interface RecommendationRow {
   updated_at: string
 }
 
+/** One row per (account, campaign_name, date) summarising the day's
+ *  ground-truth revenue from the configured e-commerce provider. Maintained
+ *  by the sync cron; pipeline reads from here. */
+export interface CampaignRevenueDailyRow {
+  account_id: string
+  campaign_name: string
+  /** ISO date `YYYY-MM-DD` (UTC). */
+  date: string
+  /** Provider tag — 'yampi' today; future tenants may differ. */
+  provider: string
+  revenue_brl: number
+  n_orders: number
+  synced_at: string
+}
+
 export type ChatDirection = 'outbound' | 'inbound'
 
 /** Row in `chat_messages`. `payload` is JSON-encoded TEXT. */

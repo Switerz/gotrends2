@@ -28,6 +28,7 @@ import { runModelsForAccount } from '@/pipeline/runModels'
 import { ExecutionsRepo } from '@/db/repos/executions'
 import { verifyExecution } from '@/agent/verification/executionVerification'
 import { computeTroasDrift } from '@/agent/refiners/troasDrift'
+import { syncRevenueIncremental, syncRevenueRange } from '@/pipeline/revenueSync'
 import {
   MAX_DAILY_TROAS_DRIFT,
   MAX_TROAS_DRIFT_7D,
@@ -602,3 +603,52 @@ export async function verifyPendingExecutions(env: Env): Promise<
 cronRouter.post('/verify-executions', async (c) =>
   c.json(await verifyPendingExecutions(c.env)),
 )
+
+// ---------------------------------------------------------------------------
+// POST /cron/sync-revenue   (daily 03:00 UTC, before /cron/run-models)
+// ---------------------------------------------------------------------------
+//
+// Incremental refresh of campaign_revenue_daily for every account with a
+// revenue source configured. Re-syncs the last 3 days each fire (catches
+// late-arriving orders) + extends forward to today. Idempotent.
+export async function syncRevenueAllAccounts(env: Env): Promise<{
+  ran: number
+  results: Array<{
+    accountId: string
+    provider: string | null
+    windowsScanned: number
+    rowsUpserted: number
+    ordersAggregated: number
+    errors: Array<{ fromDate: string; toDate: string; error: string }>
+  }>
+}> {
+  const accountsRepo = new AccountsRepo(env.DB)
+  const accounts = await accountsRepo.listActive()
+  const nowIso = new Date().toISOString()
+  const results = []
+  for (const acc of accounts) {
+    const r = await syncRevenueIncremental(env, env.DB, acc.account_id, nowIso)
+    results.push(r)
+  }
+  return { ran: accounts.length, results }
+}
+
+cronRouter.post('/sync-revenue', async (c) =>
+  c.json(await syncRevenueAllAccounts(c.env)),
+)
+
+// ---------------------------------------------------------------------------
+// Backfill helper exposed via admin trigger (NOT a cron). On-demand seed
+// for the initial historical fill. `days` walks back from today; defaults
+// to 60 to mirror the pipeline window.
+// ---------------------------------------------------------------------------
+export async function backfillRevenueForAccount(
+  env: Env,
+  accountId: string,
+  days = 60,
+): ReturnType<typeof syncRevenueRange> {
+  const today = new Date().toISOString().slice(0, 10)
+  const fromMs = Date.parse(`${today}T00:00:00Z`) - days * 24 * 3600 * 1000
+  const from = new Date(fromMs).toISOString().slice(0, 10)
+  return syncRevenueRange(env, env.DB, accountId, from, today)
+}

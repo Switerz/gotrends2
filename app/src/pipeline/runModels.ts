@@ -137,13 +137,18 @@ export async function runModelsForAccount(
     const settings = parseSettings(settingsRaw)
 
     // Real-revenue overlay: replace conversion_value (Google Ads proxy) with
-    // the e-commerce ground truth where we have a (date, campaign_name)
-    // match. Failure is non-fatal — we keep the proxy and log the cause.
-    // The overlay runs BEFORE the baseline/elasticity models so every
-    // downstream calculation sees the corrected figure.
-    const revenueOverlay = env
-      ? await applyRevenueOverlay(env, opts.accountId, daily, windowStart, windowEnd)
-      : { nOrdersFetched: 0, nOrdersFromGoogleAds: 0, nOrdersWithoutCampaign: 0, nRowsOverridden: 0, realRevenueBrlTotal: 0 }
+    // the e-commerce ground truth from the LOCAL revenue cache (populated by
+    // the nightly sync cron — see pipeline/revenueSync.ts). Failure is
+    // non-fatal — we keep the proxy and log the cause. The overlay runs
+    // BEFORE the baseline/elasticity models so every downstream calculation
+    // sees the corrected figure.
+    const revenueOverlay = await applyRevenueOverlay(
+      db,
+      opts.accountId,
+      daily,
+      windowStart,
+      windowEnd,
+    )
 
     // Auto-expire unengaged recs older than the stale window BEFORE the
     // dedup gate runs. This is what allows a fresh run to overwrite an
@@ -340,11 +345,11 @@ export async function runModelsForAccount(
       nSkippedRejectionCooldown: 0,
       nExpiredStale: 0,
       revenueOverlay: {
-        nOrdersFetched: 0,
-        nOrdersFromGoogleAds: 0,
-        nOrdersWithoutCampaign: 0,
+        nCacheRows: 0,
         nRowsOverridden: 0,
         realRevenueBrlTotal: 0,
+        cacheFromDate: null,
+        cacheToDate: null,
       },
       errors: [(e as Error).message ?? String(e)],
     }

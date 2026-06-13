@@ -61,11 +61,17 @@ export function makeFakeDb(): FakeDb {
     }
 
     // ----- INSERT -----
+    // Tables that have a composite primary key the fake DB needs to honour
+    // when the statement is `INSERT OR REPLACE`. SQLite uses the real PK
+    // declared in DDL; the fake hardcodes them (cheap, change-cost: 1 line).
+    const REPLACE_PKS: Record<string, string[]> = {
+      campaign_revenue_daily: ['account_id', 'campaign_name', 'date'],
+    }
     const insertMatch = sql.match(
-      /^INSERT(?:\s+OR\s+\w+)?\s+INTO\s+(\w+)\s*\(([^)]+)\)\s+VALUES\s*\(([^)]+)\)$/i,
+      /^INSERT(?:\s+OR\s+(\w+))?\s+INTO\s+(\w+)\s*\(([^)]+)\)\s+VALUES\s*\(([^)]+)\)$/i,
     )
     if (insertMatch) {
-      const [, table, colsRaw] = insertMatch
+      const [, orClause, table, colsRaw] = insertMatch
       const cols = colsRaw!.split(',').map((c) => c.trim())
       const row: Row = {}
       for (let i = 0; i < cols.length; i++) {
@@ -79,11 +85,25 @@ export function makeFakeDb(): FakeDb {
         run_ts: now,
         decided_at: now,
         observed_at: now,
+        synced_at: now,
       }
       for (const [k, v] of Object.entries(defaults)) {
         if (!(k in row)) row[k] = v
       }
-      ensure(table!).push(row)
+      const tableRows = ensure(table!)
+      // INSERT OR REPLACE: delete any row that conflicts on the known PK.
+      if (
+        orClause &&
+        orClause.toUpperCase() === 'REPLACE' &&
+        REPLACE_PKS[table!]
+      ) {
+        const pk = REPLACE_PKS[table!]!
+        for (let i = tableRows.length - 1; i >= 0; i--) {
+          const r = tableRows[i]!
+          if (pk.every((k) => r[k] === row[k])) tableRows.splice(i, 1)
+        }
+      }
+      tableRows.push(row)
       return { rowsWritten: 1 }
     }
 

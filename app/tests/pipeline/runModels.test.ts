@@ -507,10 +507,9 @@ describe('computeObservedRoas7d', () => {
 
   it('skips rows with non-numeric cost / revenue', () => {
     const daily = [
-      // @ts-expect-error — testing defensive null handling
-      { date: '2026-06-10', campaign_id: 'c1', cost: null, conversion_value: null },
+      { date: '2026-06-10', campaign_id: 'c1', cost: null, conversion_value: null } as unknown as DailyRow,
       row('2026-06-10', 'c1', 100, 500),
-    ] as DailyRow[]
+    ]
     expect(computeObservedRoas7d(daily, '2026-06-10').get('c1')).toBe(5.0)
   })
 })

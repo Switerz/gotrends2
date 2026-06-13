@@ -18,6 +18,8 @@ import {
   sendPendingToChat,
   computeOutcomesWindow,
   verifyPendingExecutions,
+  syncRevenueAllAccounts,
+  backfillRevenueForAccount,
 } from './cron'
 
 export const adminTriggerRouter = new Hono<{ Bindings: Env }>()
@@ -38,3 +40,16 @@ adminTriggerRouter.post('/outcomes/72h', async (c) =>
 adminTriggerRouter.post('/verify-executions', async (c) =>
   c.json(await verifyPendingExecutions(c.env)),
 )
+adminTriggerRouter.post('/sync-revenue', async (c) =>
+  c.json(await syncRevenueAllAccounts(c.env)),
+)
+// POST /api/admin/trigger/backfill-revenue?accountId=X&days=60
+adminTriggerRouter.post('/backfill-revenue', async (c) => {
+  const accountId = c.req.query('accountId')
+  if (!accountId) {
+    return c.json({ error: 'missing accountId query param' }, 400)
+  }
+  const daysRaw = c.req.query('days')
+  const days = daysRaw ? Math.max(1, Math.min(365, Number(daysRaw))) : 60
+  return c.json(await backfillRevenueForAccount(c.env, accountId, days))
+})
